@@ -191,14 +191,23 @@ Expected first-boot log:
 [entrypoint] migration 003_removal_prerequisites.sql
 [entrypoint] migration 004_standard_object_type.sql
 [entrypoint] migration 005_agent_chat.sql
-[entrypoint] schema ready: 24 tables
-[entrypoint] sf CLI @salesforce/cli/2.146.3 linux-x64 node-v20.20.2
+[entrypoint] migration 006_auth.sql
+[entrypoint] schema ready: 25 tables
+[entrypoint] sf CLI @salesforce/cli/2.x linux-x64 node-v20.x
 [entrypoint] starting uvicorn on 0.0.0.0:8000
 ```
 
-**24 tables** is the number to look for. On a restart the second line becomes
-`25 relations present -- skipping schema.sql` and the migrations replay
-harmlessly.
+**25 tables** is the number to look for. On a restart the second line becomes
+`NN relations present -- skipping schema.sql` and the migrations replay
+harmlessly. Right after it you should see the auth bootstrap:
+
+```
+auth_superuser_ready  email=... password='applied from environment'
+```
+
+If that line says `auth_superuser_unset` or `auth_superuser_no_password`
+instead, nobody can sign in — fix the `AUTH_SUPERUSER_*` values and run
+`./deploy/manage.sh reload-env`.
 
 Open `http://<vm-ip>/`.
 
