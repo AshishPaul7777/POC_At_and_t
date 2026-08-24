@@ -11,6 +11,8 @@
    follow a theme switch and can never disagree with the UI beside them about
    what a verdict colour is. Hardcoding these meant the drawings stayed dark --
    and on a white brand, unreadable. */
+import { DocsInternals } from './DocsInternals'
+
 const C = {
   used: 'var(--used)', unused: 'var(--unused)', review: 'var(--review)',
   scope: 'var(--scope)', accent: 'var(--accent)', ai: 'var(--ai)',
@@ -402,6 +404,8 @@ export function Docs() {
           is monospace. The exact prompt is viewable on each component.
         </p>
       </section>
+
+      <DocsInternals />
     </div>
   )
 }

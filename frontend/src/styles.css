@@ -907,3 +907,34 @@ table.mini td, table.mini th { padding: 7px 10px; font-size: 12px; }
   .login-card { padding: 26px 20px; }
   .whoami-email { display: none; }
 }
+
+/* =========================================================================
+   Docs — technical reference
+   ====================================================================== */
+/* Section headings inside a docs section. h2 opens a topic; h3 opens a part
+   of one, so it has to read as subordinate without disappearing. */
+.docs h3 { font-size: 14px; font-weight: 600; color: var(--text);
+  margin: 26px 0 8px; }
+.docs h3:first-child { margin-top: 0; }
+
+/* Verdict pills in the rule list. Docs.tsx sets these inline on its own
+   diagram; the rule tables use modifiers so the markup stays declarative. */
+.rule-verdict.used    { color: var(--used);   background: var(--used-soft); }
+.rule-verdict.unused  { color: var(--unused); background: var(--unused-soft); }
+.rule-verdict.review  { color: var(--review); background: var(--review-soft); }
+.rule-verdict.scope   { color: var(--scope);  background: var(--hover); }
+
+.numbered { margin: 0; padding-left: 20px; }
+.numbered li { font-size: 13.5px; color: var(--text-dim); line-height: 1.8;
+  margin-bottom: 8px; }
+.numbered li b { color: var(--text); }
+
+/* Long reference tables carry more prose per cell than the result tables do,
+   so they need to breathe and to wrap rather than scroll where possible. */
+.doc-table td { vertical-align: top; line-height: 1.65; }
+.doc-table td:first-child { white-space: nowrap; }
+.doc-table code { white-space: normal; word-break: break-word; }
+
+.docs p code, .docs li code, .docs td code {
+  font-size: 12px; padding: 1px 5px; border-radius: 4px;
+  background: var(--hover); color: var(--text); }
