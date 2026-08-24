@@ -32,6 +32,16 @@ if [ "${#missing[@]}" -gt 0 ]; then
   fail "these are empty in .env: ${missing[*]}"
 fi
 
+# Placeholders pass the "is it empty" check above and then fail much later, as
+# a DNS error from setup-org that says nothing about .env.
+for key in SF_INSTANCE_URL; do
+  value=$(grep -E "^${key}=" .env | head -1 | cut -d= -f2-)
+  case "${value}" in
+    *YOUR-DOMAIN*|*your-domain*|*example.com*)
+      fail "${key} is still the template placeholder: ${value}" ;;
+  esac
+done
+
 # A short superuser password is the whole front door. The backend enforces this
 # too, but there it fails at boot as a log line nobody is watching.
 pw=$(grep -E '^AUTH_SUPERUSER_PASSWORD=' .env | head -1 | cut -d= -f2-)
