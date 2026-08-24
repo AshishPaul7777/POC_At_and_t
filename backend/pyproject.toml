@@ -1,0 +1,62 @@
+[project]
+name = "sfc-backend"
+version = "0.1.0"
+description = "Salesforce Org Cleanup Analyzer - API and analysis orchestrator"
+requires-python = ">=3.11"
+
+dependencies = [
+    "fastapi>=0.118",
+    "uvicorn[standard]>=0.34",
+    "sse-starlette>=2.2",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    # HTTP/2 matters: it multiplexes SSE connections past the HTTP/1.1
+    # six-per-origin cap that bites as soon as a dev opens a few tabs.
+    "httpx[http2]>=0.28",
+    "tenacity>=9.0",
+    "structlog>=24.4",
+    "lxml>=5.3",          # Flow / Layout / PermissionSet XML extraction
+    "python-dotenv>=1.0",
+    # Provider-agnostic LLM access via init_chat_model. Provider packages are
+    # optional extras so an OpenAI-only deployment need not install Anthropic.
+    "langchain>=0.3",
+    "langchain-core>=0.3",
+    "xlsxwriter>=3.2",
+    "jinja2>=3.1",
+    # Exposes the agent tool registry over MCP, so Claude Code and Claude
+    # Desktop can query this org analysis with the same tools the in-app
+    # chat agent uses.
+    "mcp>=1.2",
+]
+
+[project.optional-dependencies]
+anthropic = ["langchain-anthropic>=0.3"]
+openai    = ["langchain-openai>=0.2"]
+google    = ["langchain-google-genai>=2.0"]
+pdf       = ["weasyprint>=63"]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.8",
+    "mypy>=1.14",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

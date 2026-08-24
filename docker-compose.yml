@@ -1,0 +1,59 @@
+# ACTIVE. Postgres 16 + Redis 7.4, both verified healthy with the schema
+# auto-applied on first boot and all invariants passing.
+#
+# Host ports are deliberately shifted (5433, 6380) to avoid colliding with the
+# local PostgreSQL 15 service still running on 5432, which was used before Docker
+# became available and is retained as a fallback.
+#
+# Redis is up but events still flow over Postgres LISTEN/NOTIFY: that path is
+# built, tested, and adequate at POC scale, and the events table is the durable
+# source of truth either way. Redis Streams remain the better choice once many
+# concurrent viewers matter, since each SSE connection can hold an independent
+# cursor with no per-viewer server state.
+name: sf-cleanup-analyzer
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sfc-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-sfcleanup}
+      # Deterministic collation so ORDER BY on API names is stable across hosts.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      - "5433:5432"        # 5433 on the host to avoid colliding with a local PG
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-sfcleanup}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: sfc-redis
+    restart: unless-stopped
+    # appendonly keeps the event streams across a restart mid-run.
+    command: ["redis-server", "--appendonly", "yes", "--save", ""]
+    ports:
+      - "6380:6379"        # 6380 on the host for the same reason
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:
+  # Retrieved Salesforce metadata. A named volume, NOT a Windows bind mount --
+  # Docker Desktop bind mounts through WSL2 are pathologically slow for the
+  # many-small-files shape of a retrieved org.
+  sf_workspace:

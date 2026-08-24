@@ -1,0 +1,9 @@
+# Frontend-specific only. Everything general -- node_modules, dist, logs,
+# editor files -- lives in the repo root .gitignore.
+#
+# This file previously held React's own repository .gitignore, copied in
+# wholesale: sixty lines about react-devtools build directories that do not
+# exist here, and nothing about this app.
+
+.vite/
+*.local

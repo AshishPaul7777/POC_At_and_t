@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "Copy to orgs.json (gitignored) to analyse more than one org.",
+    "With a single org you can skip this entirely and use the SF_* vars in .env.",
+    "",
+    "Nothing about an org is assumed by the code. Edition, API allowance,",
+    "Event Monitoring availability, Dependency API coverage and endpoint routing",
+    "are all DISCOVERED per org by `python scripts/probe_org.py <alias>` and",
+    "cached in the org_capabilities table. Point this at any org and it adapts.",
+    "",
+    "Each org needs a Connected App with:",
+    "  - 'Enable Client Credentials Flow' checked (OAuth Settings)",
+    "  - a 'Run As' user assigned (Manage > Edit Policies)",
+    "The Run As user's permissions bound what the analysis can see, so a",
+    "System Administrator is strongly recommended - anything invisible to that",
+    "user is indistinguishable from something genuinely unused."
+  ],
+  "orgs": [
+    {
+      "alias": "acme-prod",
+      "instance_url": "https://acme.my.salesforce.com",
+      "client_id": "3MVG9...",
+      "client_secret": "...",
+      "api_version": "67.0",
+      "auth_flow": "client_credentials",
+      "notes": { "owner": "platform-team", "environment": "production" }
+    },
+    {
+      "alias": "acme-uat",
+      "instance_url": "https://acme--uat.sandbox.my.salesforce.com",
+      "client_id": "3MVG9...",
+      "client_secret": "...",
+      "api_version": "67.0"
+    }
+  ]
+}
