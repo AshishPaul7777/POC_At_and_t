@@ -74,7 +74,7 @@ say "starting the stack"
 $COMPOSE up -d
 
 # --- wait for health ------------------------------------------------------------
-# The first boot applies the schema and four migrations before uvicorn binds,
+# The first boot applies the schema and every migration before uvicorn binds,
 # so this legitimately takes longer than a restart.
 say "waiting for the backend to become healthy"
 for i in $(seq 1 60); do
