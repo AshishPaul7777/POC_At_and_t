@@ -1,0 +1,64 @@
+# Production stack against a Postgres that already exists on the VM.
+#
+# Use this instead of docker-compose.prod.yml when another stack on the same
+# host already runs a database you want to share -- for example an existing
+# `crm-db` container. It brings up redis, the backend and nginx, and points the
+# backend at that database over the other stack's docker network.
+#
+# Shared service definitions come from deploy/compose-base.yml, so build
+# arguments, volumes and environment cannot drift from the bundled-database
+# stack. Each stack declares its own `depends_on`, because there is no postgres
+# service here to wait for.
+#
+# Required in .env, on top of the usual values:
+#
+#   EXTERNAL_DB_NETWORK   docker network the database container is attached to
+#   POSTGRES_HOST         the database container's name  (e.g. crm-db)
+#   POSTGRES_USER         a role that owns POSTGRES_DB
+#   POSTGRES_PASSWORD     that role's password
+#   POSTGRES_DB           a database created for this app  (e.g. sfcleanup)
+#
+# See DEPLOYMENT.md, "Deploying alongside an existing stack".
+name: sfc
+
+services:
+  redis:
+    extends:
+      file: deploy/compose-base.yml
+      service: redis
+
+  backend:
+    extends:
+      file: deploy/compose-base.yml
+      service: backend
+    environment:
+      # Overrides the prod file's container-internal wiring. The host is the
+      # other stack's container name, resolved by docker's embedded DNS on the
+      # shared network below.
+      POSTGRES_HOST: "${POSTGRES_HOST:?set POSTGRES_HOST to the database container name}"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-sfcleanup}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-sfcleanup}
+    depends_on:
+      redis: { condition: service_healthy }
+    networks:
+      # `default` keeps redis reachable; `dbnet` reaches the other stack. A
+      # container on two networks needs both listed -- naming only dbnet would
+      # silently drop it off the default network and break redis.
+      - default
+      - dbnet
+
+  web:
+    extends:
+      file: deploy/compose-base.yml
+      service: web
+    depends_on:
+      backend: { condition: service_started }
+
+networks:
+  dbnet:
+    external: true
+    name: "${EXTERNAL_DB_NETWORK:?set EXTERNAL_DB_NETWORK in .env -- see DEPLOYMENT.md}"
+
+volumes:
+  redisdata:
+  workspace:

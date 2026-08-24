@@ -1,4 +1,8 @@
-# Production stack for a single Linux VM.
+# Production stack for a single Linux VM: database included.
+#
+# If the VM already runs a Postgres you want to share, use
+# docker-compose.external-db.yml instead. Service definitions common to both
+# live in deploy/compose-base.yml.
 #
 # Differences from the development compose file, and why:
 #
@@ -34,60 +38,26 @@ services:
     # No ports: the database is reachable only from the compose network.
 
   redis:
-    image: redis:7.4-alpine
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--save", ""]
-    volumes:
-      - redisdata:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 12
+    extends:
+      file: deploy/compose-base.yml
+      service: redis
 
   backend:
-    build:
-      context: .
-      dockerfile: deploy/backend.Dockerfile
-    restart: unless-stopped
-    env_file: [.env]
+    extends:
+      file: deploy/compose-base.yml
+      service: backend
     environment:
-      # Container-internal wiring. These override whatever .env carries for a
-      # developer machine, so the same .env works in both places.
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sfcleanup}
-      REDIS_URL: redis://redis:6379/0
-      # Must be absolute and inside the mounted volume. A relative path would
-      # resolve against the repo root and land on the container filesystem,
-      # where a redeploy would silently discard the retrieved metadata.
-      WORKSPACE_DIR: /app/.cache/workspace
-      SF_CLI_PATH: sf
-      API_HOST: 0.0.0.0
-      API_PORT: "8000"
-    volumes:
-      # Retrieved metadata and generated reports. Named, not a bind mount:
-      # the retrieve pulls hundreds of small files and bind mounts are slow.
-      - workspace:/app/.cache
     depends_on:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status==200 else 1)\""]
-      interval: 15s
-      timeout: 6s
-      retries: 5
-      # The first boot applies the schema and four migrations before uvicorn
-      # binds, so give it room before the healthcheck starts judging.
-      start_period: 90s
 
   web:
-    build:
-      context: .
-      dockerfile: deploy/frontend.Dockerfile
-    restart: unless-stopped
-    ports:
-      - "${HTTP_PORT:-80}:80"
+    extends:
+      file: deploy/compose-base.yml
+      service: web
     depends_on:
       backend: { condition: service_started }
 
