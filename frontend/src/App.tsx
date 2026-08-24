@@ -122,17 +122,6 @@ export default function App() {
       .catch(() => setMe({ authenticated: false }))
   }, [])
 
-  // Scroll to the linked section once it exists. It does not exist until the
-  // session has resolved and its view has rendered, so this depends on both
-  // rather than running once on mount.
-  useEffect(() => {
-    if (!me?.authenticated) return
-    const t = parseHash()
-    if (!t?.anchor) return
-    const el = document.getElementById(t.anchor)
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }, [view, me])
-
   // Someone pasting a second link into the same tab changes only the hash,
   // which navigates nothing by itself.
   useEffect(() => {

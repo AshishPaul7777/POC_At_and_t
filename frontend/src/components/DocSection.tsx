@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { copyText, linkTo, slugify } from '../lib/anchors'
+import { useEffect, useRef, useState } from 'react'
+import { copyText, linkTo, parseHash, slugify } from '../lib/anchors'
 
 /**
  * A documentation section with a shareable anchor.
@@ -19,6 +19,31 @@ export function DocSection({
 }) {
   const id = slugify(title)
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const ref = useRef<HTMLElement>(null)
+
+  /**
+   * Scroll here on arrival, if this is the linked section.
+   *
+   * Owned by the section rather than by App, because App cannot know when the
+   * section exists. Its effect depended on the view and the session, but the
+   * docs page does not render until the *run* has loaded as well — so on any
+   * deployment where the run arrives after the session, the effect fired
+   * against an empty DOM and nothing re-ran it. Here the element exists by
+   * definition: the effect cannot run before its own element is mounted.
+   */
+  useEffect(() => {
+    const t = parseHash()
+    if (t?.view !== 'docs' || t.anchor !== id) return
+
+    // Instant, not smooth. A smooth scroll of several thousand pixels on load
+    // is slow, and any wheel touch during it cancels the scroll silently.
+    const go = () => ref.current?.scrollIntoView({ block: 'start' })
+    const raf = requestAnimationFrame(go)
+    // Second pass once layout has settled: inline SVG and long tables change
+    // height after first paint, which moves the target out from under us.
+    const settle = setTimeout(go, 300)
+    return () => { cancelAnimationFrame(raf); clearTimeout(settle) }
+  }, [id])
 
   const copy = async () => {
     const url = linkTo('docs', id)
@@ -34,7 +59,7 @@ export function DocSection({
   }
 
   return (
-    <section id={id} className={className}>
+    <section id={id} className={className} ref={ref}>
       <h2 className="doc-h2">
         {title}
         <button
