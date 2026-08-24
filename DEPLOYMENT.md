@@ -257,7 +257,7 @@ Expected first-boot log:
 [entrypoint] migration 005_agent_chat.sql
 [entrypoint] migration 006_auth.sql
 [entrypoint] schema ready: 25 tables
-[entrypoint] sf CLI @salesforce/cli/2.x linux-x64 node-v20.x
+[entrypoint] sf CLI @salesforce/cli/2.148.3 linux-x64 node-v22.23.2
 [entrypoint] starting uvicorn on 0.0.0.0:8000
 ```
 
@@ -500,6 +500,7 @@ Restore is destructive and asks you to type the database name to confirm.
 | Retrieve fails, `sf: not found` | The image build skipped the CLI. Rebuild with `./deploy/deploy.sh` and check for `sf CLI` in the boot log |
 | 429 from the LLM gateway | Token quota for the window. The run stops cleanly and keeps partial results; the UI shows when the quota resets |
 | Port 80 already in use | Set `HTTP_PORT=8080` in `.env` and redeploy |
+| `markAsUncloneable is not a function` from `sf` | The image was built on Node 20, which never got that API — the CLI installs and reports its version fine, then dies the moment it touches an org. Rebuild: `./deploy/deploy.sh`. The build now refuses to produce an image whose CLI cannot load |
 | Disk filling up | `./deploy/manage.sh status` shows workspace size. Old run reports live under `/app/.cache/reports` |
 
 ---

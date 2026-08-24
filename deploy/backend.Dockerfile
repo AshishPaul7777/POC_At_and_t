@@ -17,11 +17,18 @@
 # will not run on an image with another, and python:3.12-slim has since moved
 # to trixie.
 #
+# Node 22, not 20. The undici bundled inside @salesforce/cli calls
+# worker_threads.markAsUncloneable, which landed in Node 22.10 and was never
+# backported to 20 -- so on Node 20 the CLI installs cleanly, reports its
+# version cleanly, and then dies with "webidl.util.markAsUncloneable is not a
+# function" the first time anything touches an org. Node 22 is Active LTS and
+# is what the CLI is built against.
+#
 # psql is here because the entrypoint applies the schema and migrations itself
 # rather than trusting Postgres's one-shot init directory, which only fires on
 # an empty volume and skips the migrations entirely.
 
-FROM node:20-bookworm-slim AS node
+FROM node:22-bookworm-slim AS node
 FROM python:3.12-slim-bookworm AS base
 
 ENV PYTHONUNBUFFERED=1 \
@@ -38,9 +45,24 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && node --version && npm --version
 
+# The CLI phones home by default. This is pointed at a client's org, so opt out.
+ENV SF_DISABLE_TELEMETRY=true
+
 RUN npm install -g @salesforce/cli --omit=dev \
     && npm cache clean --force \
-    && sf --version
+    && sf --version \
+    # `sf --version` loads none of the org plumbing, so it stayed green while
+    # the CLI was fatally broken on Node 20. Exercise the path that actually
+    # failed -- jsforce, and through it undici -- so a bad Node/CLI pairing
+    # breaks the build here instead of the first analysis run on the VM.
+    # A dummy token is expected to be rejected; only a load-time crash matters.
+    && out=$(SF_ACCESS_TOKEN=dummy sf org login access-token \
+               --instance-url https://example.my.salesforce.com --no-prompt 2>&1 || true) \
+    && case "$out" in \
+         *"is not a function"*|*"Cannot find module"*|*"SyntaxError"*) \
+           echo "sf CLI is broken on $(node --version):" >&2; echo "$out" >&2; exit 1 ;; \
+       esac \
+    && echo "sf CLI smoke test passed on $(node --version)"
 
 # config.py derives REPO_ROOT as parents[2] of backend/app/config.py, so the
 # code must live at /app/backend for /app/.env and /app/.cache to resolve the

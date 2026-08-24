@@ -5,7 +5,10 @@
 # keeps CORS out of the picture entirely and means no API base URL has to be
 # configured into the client at build time.
 
-FROM node:20-alpine AS build
+# Node 22: 20 reached end of life in April 2026, and the backend image needs
+# 22 for the Salesforce CLI. Keeping both on the same major means one
+# toolchain to reason about rather than two.
+FROM node:22-alpine AS build
 WORKDIR /src
 
 # Lockfile first so dependency installs cache independently of source edits.
