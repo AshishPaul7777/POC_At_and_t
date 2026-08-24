@@ -11,6 +11,8 @@
  * that is wrong.
  */
 
+import { DocSection } from './DocSection'
+
 const C = {
   used: 'var(--used)', unused: 'var(--unused)', review: 'var(--review)',
   scope: 'var(--scope)', accent: 'var(--accent)', ai: 'var(--ai)',
@@ -200,18 +202,16 @@ const COLLECTORS: [string, string, string, string][] = [
 export function DocsInternals() {
   return (
     <>
-      <section>
-        <h2>Technical reference</h2>
+      <DocSection title="Technical reference">
         <p className="lead">
           Everything above answers whether a verdict can be trusted. What follows
           answers how it was produced — which API was called, with which query,
           and what an empty result was allowed to mean.
         </p>
-      </section>
+      </DocSection>
 
       {/* ---------------------------------------------------- acquisition */}
-      <section>
-        <h2>How data leaves the org</h2>
+      <DocSection title="How data leaves the org">
         <p className="lead">
           Four surfaces, because no single Salesforce API exposes all of it.
           Reports live on one, Apex definitions on another, and validation rules
@@ -265,11 +265,10 @@ export function DocsInternals() {
           <code>/services/data/vXX/limits</code> is read separately, and is what
           the API budget meter reports.
         </p>
-      </section>
+      </DocSection>
 
       {/* -------------------------------------------------------- routing */}
-      <section>
-        <h2>Routing, and the failure it prevents</h2>
+      <DocSection title="Routing, and the failure it prevents">
         <p className="lead">
           Querying <code>Report</code> through the Tooling API returns{' '}
           <code>INVALID_TYPE</code>. So does querying <code>ValidationRule</code>{' '}
@@ -319,11 +318,10 @@ export function DocsInternals() {
           by the Data API. All three were wrong in the first version of the
           registry, which is why the probe script exists.
         </p>
-      </section>
+      </DocSection>
 
       {/* --------------------------------------------------------- budget */}
-      <section>
-        <h2>The API budget</h2>
+      <DocSection title="The API budget">
         <p className="lead">
           Every call is leased from a governor before it is made. The point is
           not politeness — it is that exhausting the org's daily limit is an
@@ -349,11 +347,10 @@ export function DocsInternals() {
             rather than retrying into the wall.
           </li>
         </ul>
-      </section>
+      </DocSection>
 
       {/* --------------------------------------------------------- stages */}
-      <section>
-        <h2>The ten stages</h2>
+      <DocSection title="The ten stages">
         <p className="lead">
           Sequential, each writing its output to Postgres before the next starts.
           Call counts are typical for a mid-size org, not guarantees.
@@ -380,11 +377,10 @@ export function DocsInternals() {
           are where most of the analysis happens. That is deliberate: metadata is
           pulled to disk once, and everything after reads local files.
         </p>
-      </section>
+      </DocSection>
 
       {/* ------------------------------------------------------- inventory */}
-      <section>
-        <h2>Inventory and the alias table</h2>
+      <DocSection title="Inventory and the alias table">
         <p>
           Inventory enumerates what exists and, more importantly, builds the{' '}
           <b>alias table</b> — every string by which a component can legitimately
@@ -418,11 +414,10 @@ export function DocsInternals() {
           Namespaced components from managed packages are identified here and
           marked out of scope: they cannot be deleted from this org anyway.
         </p>
-      </section>
+      </DocSection>
 
       {/* -------------------------------------------------------- retrieve */}
-      <section>
-        <h2>Retrieving the metadata tree</h2>
+      <DocSection title="Retrieving the metadata tree">
         <p>
           A manifest is generated and passed to{' '}
           <code>sf project retrieve start --manifest package.xml</code>. Around
@@ -452,11 +447,10 @@ export function DocsInternals() {
           not <code>ReportingSnapshot</code> as the documentation implies, and
           getting it wrong silently costs every other type sharing the chunk.
         </p>
-      </section>
+      </DocSection>
 
       {/* ----------------------------------------------------------- index */}
-      <section>
-        <h2>Indexing: three layers, unioned</h2>
+      <DocSection title="Indexing: three layers, unioned">
         <p className="lead">
           Every retrieved file is read by three independent extractors. Their
           results are unioned, never intersected — a parse failure in one must
@@ -500,11 +494,10 @@ export function DocsInternals() {
           Code is separated from comments first, so a field name mentioned only
           in a comment never counts as a use.
         </p>
-      </section>
+      </DocSection>
 
       {/* ------------------------------------------------------ collectors */}
-      <section>
-        <h2>The collectors, in detail</h2>
+      <DocSection title="The collectors, in detail">
         <p className="lead">
           Each answers one question, is blind to the others' conclusions, and
           writes a row whether or not it found anything. None of them returns
@@ -579,11 +572,10 @@ export function DocsInternals() {
           here</em> — which is precisely how a live component becomes a deletion
           candidate.
         </p>
-      </section>
+      </DocSection>
 
       {/* ----------------------------------------------------------- graph */}
-      <section>
-        <h2>Building the dependency graph</h2>
+      <DocSection title="Building the dependency graph">
         <p className="lead">
           Counting references answers “how many things mention this?”, which is
           not the question. The question is whether the component can be reached
@@ -654,11 +646,10 @@ export function DocsInternals() {
           exactly why it is alive, and what would have to change for it not to
           be.
         </p>
-      </section>
+      </DocSection>
 
       {/* -------------------------------------------------------- classify */}
-      <section>
-        <h2>Classification, rule by rule</h2>
+      <DocSection title="Classification, rule by rule">
         <p className="lead">
           No model, no weighted sum, no learned threshold. Rules are evaluated in
           order, first match wins, and the rule that fired is stored with the
@@ -696,11 +687,10 @@ export function DocsInternals() {
           deciding a verdict wrongly deletes production metadata, so the two are
           kept strictly apart.
         </p>
-      </section>
+      </DocSection>
 
       {/* ------------------------------------------------------ boundaries */}
-      <section>
-        <h2>Where the analysis provably stops</h2>
+      <DocSection title="Where the analysis provably stops">
         <p className="lead">
           Each of these is a real boundary, not a caveat added for modesty. They
           are the reason the completeness gate exists.
@@ -733,7 +723,7 @@ export function DocsInternals() {
           cannot reach UNUSED at all — R2 catches them first. A partial analysis
           produces fewer deletion candidates, never less reliable ones.
         </p>
-      </section>
+      </DocSection>
     </>
   )
 }

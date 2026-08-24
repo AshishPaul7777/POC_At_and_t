@@ -7,6 +7,7 @@ import { Admin } from './components/Admin'
 import { Assistant } from './components/Assistant'
 import { Login } from './components/Login'
 import { auth, type Me } from './lib/auth'
+import { parseHash } from './lib/anchors'
 import { Nav, type View } from './components/Nav'
 import { Pipeline, type SnapshotStage } from './components/Pipeline'
 import {
@@ -70,10 +71,18 @@ const TITLES: Record<View, string> = {
   admin: 'Access',
 }
 
+/** Guards the hash: a junk fragment must not leave the app on no view at all. */
+const VIEWS = new Set(Object.keys(TITLES))
+
 export default function App() {
   const [run, setRun] = useState<Run | null>(null)
   const [runs, setRuns] = useState<Run[]>([])
-  const [view, setView] = useState<View>('dashboard')
+  // A shared link carries its view in the hash, so resolve it before the first
+  // render rather than switching views a frame later.
+  const [view, setView] = useState<View>(() => {
+    const t = parseHash()
+    return (t && VIEWS.has(t.view) ? t.view : 'dashboard') as View
+  })
   const [summary, setSummary] = useState<Summary | null>(null)
   const [rows, setRows] = useState<ComponentRow[]>([])
   const [allRows, setAllRows] = useState<ComponentRow[]>([])
@@ -111,6 +120,33 @@ export default function App() {
     auth.me()
       .then(setMe)
       .catch(() => setMe({ authenticated: false }))
+  }, [])
+
+  // Scroll to the linked section once it exists. It does not exist until the
+  // session has resolved and its view has rendered, so this depends on both
+  // rather than running once on mount.
+  useEffect(() => {
+    if (!me?.authenticated) return
+    const t = parseHash()
+    if (!t?.anchor) return
+    const el = document.getElementById(t.anchor)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [view, me])
+
+  // Someone pasting a second link into the same tab changes only the hash,
+  // which navigates nothing by itself.
+  useEffect(() => {
+    const onHash = () => {
+      const t = parseHash()
+      if (!t) return
+      if (VIEWS.has(t.view)) setView(t.view as View)
+      if (t.anchor) {
+        document.getElementById(t.anchor)
+          ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
   useEffect(() => {
@@ -320,7 +356,11 @@ export default function App() {
     <div className={`shell ${navOpen ? 'nav-open' : ''}`}>
       <Nav
         view={view}
-        onNav={(v) => { setView(v); setNavOpen(false) }}
+        onNav={(v) => {
+          setView(v)
+          setNavOpen(false)
+          history.replaceState(null, '', `#${v}`)
+        }}
         running={!!activeRunId}
         collapsed={narrow ? false : collapsed}
         onToggle={() => { setCollapsePinned(true); setCollapsed((c) => !c) }}

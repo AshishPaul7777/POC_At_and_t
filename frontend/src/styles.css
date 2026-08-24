@@ -938,3 +938,47 @@ table.mini td, table.mini th { padding: 7px 10px; font-size: 12px; }
 .docs p code, .docs li code, .docs td code {
   font-size: 12px; padding: 1px 5px; border-radius: 4px;
   background: var(--hover); color: var(--text); }
+
+/* ---------- shareable section anchors ------------------------------------ */
+/* The heading is a flex row so the button sits on the baseline rather than
+   pushing the text around when it appears. */
+.doc-h2 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.anchor-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--ui); font-size: 11px; line-height: 1;
+  padding: 4px 10px; border-radius: var(--r-pill);
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text-faint); cursor: pointer;
+  /* Hidden until the section is hovered, but only where hover exists --
+     see the coarse-pointer rule below, or it is unreachable on a phone. */
+  opacity: 0; transition: opacity .12s ease, color .12s ease,
+                          border-color .12s ease;
+}
+.anchor-btn svg { width: 12px; height: 12px; fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+section:hover > .doc-h2 > .anchor-btn,
+.anchor-btn:focus-visible { opacity: 1; }
+.anchor-btn:hover { color: var(--accent); border-color: var(--accent); }
+.anchor-btn.copied { opacity: 1; color: var(--used); border-color: var(--used);
+  background: var(--used-soft); }
+.anchor-btn.failed { opacity: 1; color: var(--unused); border-color: var(--unused); }
+
+/* A hover-reveal control is invisible and unusable on touch, so on a coarse
+   pointer it is simply always shown. */
+@media (hover: none), (pointer: coarse) {
+  .anchor-btn { opacity: 1; }
+}
+
+/* Landing on a linked section should not tuck its heading under the top bar. */
+.docs section { scroll-margin-top: 18px; }
+
+/* Shown only when every clipboard route was refused. Pre-selected so the URL
+   is one Ctrl+C away without any API the browser can veto. */
+.anchor-fallback { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-size: 12.5px; color: var(--unused); margin: 0 0 14px; }
+.anchor-fallback input { flex: 1; min-width: min(320px, 100%);
+  font-family: var(--mono); font-size: 12px; padding: 6px 10px;
+  border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+  background: var(--sunken); color: var(--text); }

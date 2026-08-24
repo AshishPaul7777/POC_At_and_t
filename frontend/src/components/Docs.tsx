@@ -12,6 +12,7 @@
    what a verdict colour is. Hardcoding these meant the drawings stayed dark --
    and on a white brand, unreadable. */
 import { DocsInternals } from './DocsInternals'
+import { DocSection } from './DocSection'
 
 const C = {
   used: 'var(--used)', unused: 'var(--unused)', review: 'var(--review)',
@@ -215,8 +216,7 @@ export function Docs() {
         </p>
       </header>
 
-      <section>
-        <h2>What "used" means here</h2>
+      <DocSection title={'What "used" means here'}>
         <p className="lead">
           Used means the component takes part in a real business process —
           something reads it, writes it, decides on it, or shows it to someone
@@ -256,20 +256,18 @@ export function Docs() {
           presence as use produced <b>0 findings</b>; separating the two produced
           <b> 6</b>.
         </p>
-      </section>
+      </DocSection>
 
-      <section>
-        <h2>Architecture</h2>
+      <DocSection title="Architecture">
         <ArchitectureDiagram />
         <p className="note">
           The browser is only a viewer. Analysis runs in the backend and its
           progress is durable, so reloading the page — or closing it entirely and
           coming back — never loses anything and never affects the run.
         </p>
-      </section>
+      </DocSection>
 
-      <section>
-        <h2>The pipeline</h2>
+      <DocSection title="The pipeline">
         <FlowDiagram />
         <p className="note">
           A failing optional stage <b>degrades</b> the run rather than aborting
@@ -277,10 +275,9 @@ export function Docs() {
           NEEDS REVIEW downstream — so partial coverage produces caution, never a
           confident wrong answer.
         </p>
-      </section>
+      </DocSection>
 
-      <section>
-        <h2>How a verdict is reached</h2>
+      <DocSection title="How a verdict is reached">
         <p className="lead">
           Rules are evaluated in order and the first match wins. No model decides
           a verdict, and no weighted score can cross into UNUSED.
@@ -291,10 +288,9 @@ export function Docs() {
           Ranking a queue wrongly wastes a morning; deciding a verdict wrongly
           deletes production metadata, so the two are kept strictly separate.
         </p>
-      </section>
+      </DocSection>
 
-      <section>
-        <h2>The eight collectors</h2>
+      <DocSection title="The eight collectors">
         <p className="lead">
           Each answers one question, independently, and records its result{' '}
           <b>whether or not it found anything</b>. "Searched and found nothing" is
@@ -329,10 +325,9 @@ export function Docs() {
           <div><span className="tier c">Tier C</span> consistent with use, nowhere near proof</div>
           <div><span className="tier d">Tier D</span> not evidence — an uncertainty flag that <b>suppresses</b> UNUSED</div>
         </div>
-      </section>
+      </DocSection>
 
-      <section>
-        <h2>What each page shows</h2>
+      <DocSection title="What each page shows">
         <div className="page-guide">
           {[
             ['Overview', 'Verdict counts, analysis coverage, which object to clean first, and the review queue grouped by reason. Click any tile to filter the component list.'],
@@ -344,10 +339,9 @@ export function Docs() {
             <div className="pg" key={t}><h4>{t}</h4><p>{d}</p></div>
           ))}
         </div>
-      </section>
+      </DocSection>
 
-      <section className="limits">
-        <h2>What this tool cannot know</h2>
+      <DocSection title="What this tool cannot know" className="limits">
         <p className="lead">
           Stated plainly because a cleanup tool that hides its blind spots is
           dangerous. None of these are bugs; they are structural.
@@ -375,10 +369,9 @@ export function Docs() {
           deprecate in place, revoke access, observe a full business cycle, then
           delete in small batches.
         </p>
-      </section>
+      </DocSection>
 
-      <section>
-        <h2>Where the AI is used, and where it is not</h2>
+      <DocSection title="Where the AI is used, and where it is not">
         <div className="two-col">
           <div className="col-card good">
             <h4>It does</h4>
@@ -403,7 +396,7 @@ export function Docs() {
           unverified, and set in the proportional font while every verified fact
           is monospace. The exact prompt is viewable on each component.
         </p>
-      </section>
+      </DocSection>
 
       <DocsInternals />
     </div>
