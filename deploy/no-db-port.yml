@@ -1,0 +1,21 @@
+# Optional overlay: take the database off the host entirely.
+#
+# The default stack publishes Postgres on 127.0.0.1:5432 so psql and backup
+# tooling work from an SSH session. Nothing in the application uses it -- the
+# backend reaches `postgres:5432` over the compose network -- so removing it
+# costs nothing but your own direct access.
+#
+# Use it when you want zero host-level exposure:
+#
+#     docker compose -f docker-compose.prod.yml -f deploy/no-db-port.yml up -d
+#
+# You can still get a shell on the database through the container:
+#
+#     ./deploy/manage.sh psql
+#
+# `!reset` is compose's override syntax for clearing an inherited sequence.
+# Setting `ports: []` would merge rather than replace, and leave the mapping.
+
+services:
+  postgres:
+    ports: !reset []

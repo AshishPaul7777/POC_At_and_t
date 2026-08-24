@@ -51,7 +51,37 @@ or removing them cannot affect how the stack talks to itself.
 
 Postgres is bound to `127.0.0.1` rather than every interface, which is what
 makes it safe to publish at all: `psql` from an SSH session works, and nothing
-off the box can reach it.
+off the box can reach it. To remove even that, add the overlay — the application
+is unaffected, you just lose `psql` from the host:
+
+```bash
+docker compose -f docker-compose.prod.yml -f deploy/no-db-port.yml up -d
+```
+
+### How the containers actually reach each other
+
+Compose puts every service on one bridge network (`sfc_default`) and runs a DNS
+resolver on it, so `postgres` and `redis` resolve to container addresses **only
+inside that network**. There is no public URL involved and no host port in the
+path:
+
+```
+backend ──► postgres:5432   (compose DNS, sfc_default network)
+backend ──► redis:6379
+browser ──► web:80 ──► backend:8000
+```
+
+`.env` cannot break this. The compose files set `DATABASE_URL` and `REDIS_URL`
+in each service's `environment:` block, which takes precedence over `env_file`,
+so a `DATABASE_URL` left over from a developer machine is ignored rather than
+followed. Check it any time without starting anything:
+
+```bash
+docker compose -f docker-compose.prod.yml config | grep -E 'DATABASE_URL|REDIS_URL'
+```
+
+It must print `@postgres:5432` and `redis://redis:6379`. If it prints a hostname
+you recognise from somewhere else, stop and fix that before deploying.
 
 > **A published Docker port bypasses `ufw`.** Docker's DNAT rules run before
 > ufw filters, so `sudo ufw deny 5432` looks like protection and provides none.
@@ -144,9 +174,22 @@ chmod +x deploy/*.sh
 
 ## 3. Configure
 
+`.env` is not in the repository — it holds the Salesforce client secret, the
+LLM key, the database password and the session signing key, so it is gitignored
+and excluded from the images. A fresh clone has `.env.production.example` and no
+`.env`; you create it here.
+
 ```bash
-cp .env.production.example .env
-chmod 600 .env
+./deploy/manage.sh init-env
+```
+
+That copies the template, sets mode 600, and generates `POSTGRES_PASSWORD` and
+`AUTH_SECRET_KEY` with `openssl` — the two values most often left weak or empty
+when typed by hand. It refuses to overwrite an existing `.env`. Then fill in the
+rest by hand. Doing it manually instead is fine:
+
+```bash
+cp .env.production.example .env && chmod 600 .env
 ```
 
 Fill in the values marked `[REQUIRED]`. The minimum to boot:
