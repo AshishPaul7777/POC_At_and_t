@@ -36,17 +36,36 @@ cp .env.production.example .env && chmod 600 .env   # then fill it in
 
 ## What gets deployed
 
-| Container | Image | Published | Purpose |
+| Container | Image | Published on the host | Purpose |
 |---|---|---|---|
-| `web` | nginx 1.27 | **yes**, `HTTP_PORT` | Serves the built SPA, proxies `/api` and `/health` |
-| `backend` | built here, ~185 MB | no | FastAPI, the analysis pipeline, the agent, and the `sf` CLI |
-| `postgres` | postgres 16 | no | Runs, evidence, verdicts, chat threads |
+| `web` | nginx 1.27 | `HTTP_PORT` → **80**, all interfaces | Serves the built SPA, proxies `/api` and `/health` |
+| `backend` | built here, ~185 MB | `API_PORT_PUBLISHED` → **8000**, all interfaces | FastAPI, the analysis pipeline, the agent, and the `sf` CLI |
+| `postgres` | postgres 16 | `DB_PORT_PUBLISHED` → **5432**, `127.0.0.1` only | Runs, evidence, verdicts, chat threads |
 | `redis` | redis 7.4 | no | Cache |
 
-Only nginx is reachable from outside. Postgres and Redis are on the compose
-network only — unlike the development compose file, which publishes them on
-5433/6380 so they can coexist with a local install. Exposing a database to the
-internet is the mistake worth designing out.
+**The application does not use any of those published ports.** Internally the
+backend reaches `postgres:5432` and `redis:6379` over the compose network, and
+the browser reaches the API through nginx on port 80, same-origin. The published
+ports exist for you — `curl` and `/docs` on 8000, `psql` on 5432 — so changing
+or removing them cannot affect how the stack talks to itself.
+
+Postgres is bound to `127.0.0.1` rather than every interface, which is what
+makes it safe to publish at all: `psql` from an SSH session works, and nothing
+off the box can reach it.
+
+> **A published Docker port bypasses `ufw`.** Docker's DNAT rules run before
+> ufw filters, so `sudo ufw deny 5432` looks like protection and provides none.
+> The loopback bind is the control here, not the firewall. Reach the database
+> from your laptop with a tunnel instead:
+>
+> ```bash
+> ssh -L 5432:127.0.0.1:5432 user@vm
+> ```
+>
+> The same applies to port 8000. It is on every interface because you asked for
+> a directly reachable API, and it requires a session cookie for everything
+> except `/health` — but it is reachable from wherever the VM is reachable, so
+> restrict it in your cloud security group if that is wider than you want.
 
 Three named volumes hold state: `pgdata`, `redisdata`, and `workspace`
 (retrieved org metadata plus generated reports, mounted at `/app/.cache`).
@@ -141,7 +160,9 @@ Fill in the values marked `[REQUIRED]`. The minimum to boot:
 | `SF_CLIENT_ID` / `SF_CLIENT_SECRET` | Consumer Key and Secret from the Connected App |
 | `SF_INSTANCE_URL` | Your **My Domain** host. Client-credentials tokens are never issued from `login.salesforce.com` |
 | `ANTHROPIC_API_KEY` | Or set `LLM_ENABLED=false` — verdicts are unaffected, since no model decides one |
-| `HTTP_PORT` | Defaults to 80. Use 8080 if something already owns it |
+| `HTTP_PORT` | UI. Defaults to 80. Use 8080 if something already owns it |
+| `API_PORT_PUBLISHED` | API on the host. Defaults to 8000 |
+| `DB_PORT_PUBLISHED` / `DB_BIND` | Postgres on the host. Defaults to 5432 on `127.0.0.1` |
 
 **Do not set** `DATABASE_URL`, `REDIS_URL`, `WORKSPACE_DIR`, `SF_CLI_PATH`,
 `API_HOST` or `API_PORT`. The compose file overrides all of them with
@@ -445,8 +466,10 @@ Restore is destructive and asks you to type the database name to confirm.
 - **`.env` holds live credentials.** `chmod 600`, and never commit it. It is in
   `.gitignore` and `.dockerignore`, so it is not baked into any image — the
   backend reads it at runtime through compose's `env_file`.
-- **Postgres and Redis are not published.** They are reachable only from the
-  compose network.
+- **Redis is not published, and Postgres only on loopback.** The backend reaches
+  both over the compose network; the published `127.0.0.1:5432` is for your own
+  tooling. Note that a published Docker port bypasses `ufw` — the loopback bind
+  is what protects the database, not a firewall rule.
 - **The container runs as a non-root user** (uid 10001).
 - **The API is read-only apart from starting and cancelling a run**, so a stray
   request cannot spend the org's API budget.

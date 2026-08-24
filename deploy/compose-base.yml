@@ -42,6 +42,11 @@ services:
       SF_CLI_PATH: sf
       API_HOST: 0.0.0.0
       API_PORT: "8000"
+    ports:
+      # The API on the host, for curl, /docs and anything driving it directly.
+      # The browser still reaches it through nginx on HTTP_PORT, same-origin,
+      # so this is an addition rather than the path the UI uses.
+      - "${API_BIND:-0.0.0.0}:${API_PORT_PUBLISHED:-8000}:8000"
     volumes:
       # Retrieved metadata and generated reports. Named, not a bind mount:
       # the retrieve pulls hundreds of small files and bind mounts are slow.

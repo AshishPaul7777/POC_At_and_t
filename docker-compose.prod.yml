@@ -6,16 +6,19 @@
 #
 # Differences from the development compose file, and why:
 #
-#   * Postgres and Redis are NOT published to the host. In development the
-#     ports are shifted to 5433/6380 so they can coexist with a local install;
-#     on a VM, exposing a database to the internet is the mistake to avoid, so
-#     they are reachable only on the compose network.
+#   * Published ports: nginx on HTTP_PORT (80), the API on
+#     API_PORT_PUBLISHED (8000), and Postgres on DB_PORT_PUBLISHED (5432)
+#     bound to 127.0.0.1. Redis stays unpublished -- nothing outside the
+#     stack has a reason to reach it.
+#   * The backend still reaches Postgres as `postgres:5432` over the compose
+#     network. The published port is for your tooling; changing or removing it
+#     does not affect how the application talks to its database.
 #   * The backend applies the schema and every migration on boot. The dev file
 #     mounts schema.sql into Postgres's init directory, which fires once on an
 #     empty volume and never applies the migrations -- the most common cause of
 #     a broken first start.
-#   * Only nginx is published. It serves the SPA and proxies /api, so the
-#     browser sees one origin and CORS never enters the picture.
+#   * The browser reaches the API through nginx, same-origin, so CORS never
+#     enters the picture even though the API is also published directly.
 name: sfc
 
 services:
@@ -35,7 +38,17 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
-    # No ports: the database is reachable only from the compose network.
+    ports:
+      # Bound to loopback by default, which is what makes this safe to leave
+      # on: psql from an SSH session works, nothing off the box can reach it.
+      #
+      # Do not widen this with a firewall rule as the safety net -- on Ubuntu,
+      # a published Docker port BYPASSES ufw, because Docker's DNAT rules run
+      # before ufw's filtering. "ufw deny 5432" looks like protection and is
+      # not. If you genuinely need the database from another host, set
+      # DB_BIND to that interface and restrict it in the cloud security group.
+      - "${DB_BIND:-127.0.0.1}:${DB_PORT_PUBLISHED:-5432}:5432"
+
 
   redis:
     extends:
