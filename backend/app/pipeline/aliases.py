@@ -63,9 +63,13 @@ def field_aliases(
     # Report and Custom Report Type XML join object and field with '$'.
     add(f"{parent_object}${api_name}", "report_qualified", "field.report_qualified")
 
+    # NOT a name. `Active__c` with the suffix removed is `Active`, which
+    # Salesforce never uses to mean this field -- every real reference writes
+    # Active__c, Account.Active__c or Account$Active__c. Kept in the table for
+    # provenance and refused at match time; see NON_REFERENCE_KINDS.
     bare = _bare(api_name)
     if bare.lower() != api_name.lower():
-        add(bare, "bare_name", "field.bare_name")
+        add(bare, "stripped_suffix", "field.stripped_suffix")
 
     # Relationship names are read from FieldDefinition, never derived by string
     # substitution: they are freely renameable and guessing produces both false
@@ -101,9 +105,11 @@ def object_aliases(
 
     add(api_name, "api_name", "object.api_name")
 
+    # Same reasoning as fields: `Retail_Product__c` without its suffix is not a
+    # name the platform recognises. The __r relationship form below IS one.
     bare = _bare(api_name)
     if bare.lower() != api_name.lower():
-        add(bare, "bare_name", "object.bare_name")
+        add(bare, "stripped_suffix", "object.stripped_suffix")
 
     # The relationship form used when traversing TO this object.
     if api_name.lower().endswith("__c"):
@@ -179,3 +185,93 @@ def _dedupe(aliases: list[Alias]) -> list[Alias]:
             seen.add(key)
             out.append(a)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Distinctiveness: which aliases may be matched by a broad text sweep
+# ---------------------------------------------------------------------------
+#
+# Stripping the custom suffix from `Active__c` yields the alias `active`, and
+# its label is `Active` too. Swept as a bare token across every retrieved file,
+# that matched the English word "active" in a doc-comment and the literal
+# `<status>Active</status>` in an Apex class's meta file -- and the field
+# collected a dozen Apex classes as "references" that mention it nowhere.
+#
+# Tier C is not harmless. It suppresses UNUSED through rule R7, so noise sends
+# genuinely dead metadata to a review queue that nobody can trust, and it fills
+# an evidence trail whose entire value is that a reviewer can believe it.
+#
+# The rule: a broad sweep may only match an alias that ordinary prose cannot
+# accidentally produce. A structural marker -- an underscore, a dot, a dollar,
+# a custom suffix -- is such a signal. A single lowercase word is not.
+#
+# This costs nothing real. A genuine reference to a custom field is written
+# `Active__c`, `Account.Active__c` or `{!Account.Active__c}`; none is a bare
+# word. Anything that reaches a field by its stripped name alone is
+# indistinguishable from prose, and could not have been trusted regardless.
+
+#: Words that are ordinary English, ordinary Apex, or ordinary metadata XML.
+#: A bare alias equal to one of these is never swept for.
+#:
+#: Not an attempt to enumerate English -- just the intersection of "plausible
+#: Salesforce API name with the suffix stripped" and "appears constantly in code
+#: and prose". Extend it when a false positive proves a word belongs here.
+AMBIGUOUS_BARE_WORDS: frozenset[str] = frozenset({
+    # Field names that are also plain English
+    "active", "address", "amount", "balance", "brand", "category", "city",
+    "code", "color", "comment", "comments", "company", "contact", "count",
+    "country", "currency", "customer", "date", "day", "default", "description",
+    "detail", "details", "discount", "email", "end", "error", "event", "file",
+    "first", "flag", "group", "hour", "icon", "image", "index", "info", "item",
+    "items", "key", "label", "language", "languages", "last", "level", "limit",
+    "line", "link", "location", "manager", "message", "method", "minute",
+    "mobile", "month", "name", "note", "notes", "number", "order", "owner",
+    "page", "parent", "path", "phone", "picture", "price", "priority",
+    "product", "quantity", "rate", "reason", "record", "region", "result",
+    "role", "source", "start", "state", "status", "step", "street", "subject",
+    "summary", "tag", "target", "tax", "team", "time", "title", "total",
+    "type", "unit", "units", "url", "user", "value", "version", "week", "year",
+    "zip",
+    # Apex / JS keywords and near-keywords
+    "abstract", "boolean", "break", "case", "catch", "class", "const",
+    "continue", "date", "datetime", "decimal", "delete", "double", "else",
+    "enum", "extends", "false", "final", "finally", "for", "get", "global",
+    "id", "if", "implements", "import", "insert", "instanceof", "integer",
+    "interface", "list", "long", "map", "merge", "new", "null", "object",
+    "override", "private", "protected", "public", "return", "select", "set",
+    "static", "string", "super", "switch", "test", "this", "throw", "transient",
+    "true", "try", "undelete", "update", "upsert", "virtual", "void", "while",
+    "with", "without", "sharing",
+    # Metadata XML vocabulary. `<status>Active</status>` in every .cls-meta.xml
+    # is the reason this section exists.
+    "apiversion", "available", "content", "criteria", "deleted", "draft",
+    "enabled", "field", "fields", "fullname", "inactive", "layout", "obsolete",
+    "readonly", "required", "section", "settings", "true", "visible",
+})
+
+#: Below this length a bare word is too collision-prone to sweep for, whatever
+#: it says. `sla` and `ext` will match something in any org.
+MIN_BARE_ALIAS_LENGTH = 6
+
+
+def is_sweepable(alias_lc: str) -> bool:
+    """May this alias be matched by a broad token / literal / comment sweep?
+
+    Structural extraction and exact API-name matching are unaffected: those work
+    from the qualified and suffixed forms, which always pass this test.
+    """
+    if not alias_lc:
+        return False
+
+    # A structural marker no English sentence produces by accident.
+    if any(ch in alias_lc for ch in ("_", ".", "$", "/")):
+        return True
+
+    # A Salesforce record id: 15 or 18 alphanumerics, and always mixed-case in
+    # origin, so length plus the digit is signal enough.
+    if len(alias_lc) in (15, 18) and alias_lc.isalnum() and any(c.isdigit() for c in alias_lc):
+        return True
+
+    if alias_lc in AMBIGUOUS_BARE_WORDS:
+        return False
+    return len(alias_lc) >= MIN_BARE_ALIAS_LENGTH

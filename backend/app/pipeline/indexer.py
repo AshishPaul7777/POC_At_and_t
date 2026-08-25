@@ -21,12 +21,14 @@ parse failure in one must never delete a reference another found:
 from __future__ import annotations
 
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
 from sqlalchemy import text
+
+from app.pipeline.aliases import is_sweepable
 
 from app.db.session import session_scope
 from app.pipeline.source_text import DYNAMIC_MARKERS, extract  # noqa: F401
@@ -72,6 +74,35 @@ TEXTUAL_SUFFIXES = {
     ".customPermission", ".notiftype", ".remoteSite", ".pathAssistant", ".md",
 }
 
+#: Files whose tokens are program identifiers rather than English.
+#:
+#: The distinction drives where the bare-word guard applies. `start` in an Apex
+#: class is the Batchable method; `Active` inside <status>Active</status> in a
+#: Flow is an enum value that happens to spell a field name. Both are single
+#: bare words, and only one is a reference -- so the guard is applied by
+#: context, not by the shape of the alias alone.
+#: Deliberately excludes .html and .css. An LWC template's `<strong>Active:</strong>`
+#: is a display label and `.size-btn-active` is a CSS class -- both matched
+#: Account.Active__c as a bare token. A template that really does reference the
+#: field writes `{record.Active__c}`, which is suffixed and unaffected.
+#: Alias kinds that are not API names, and so can never be a static reference.
+#:
+#: Salesforce API names are exact. A reference to a custom field is written
+#: `Active__c`, `Account.Active__c` or `Account$Active__c` -- never `Active`,
+#: and never the field's display label. Matching those looser forms produced
+#: pure noise measured against a real org: `Store_Location__c.State__c` was
+#: credited with `state` in a CartCheckoutSession layout, `Opportunity
+#: .OrderNumber__c` with `ordernumber` in an Order layout, and
+#: `Account.Active__c` with `<active>true</active>` in an assignment rule --
+#: every one a different object's field that happens to share a word.
+#:
+#: They stay in the alias table: a reviewer asking "did you consider the label?"
+#: deserves to see that the answer is yes, and that it was deliberately not
+#: treated as evidence.
+NON_REFERENCE_KINDS = frozenset({"stripped_suffix", "label"})
+
+CODE_SUFFIXES = {".cls", ".trigger", ".js", ".ts", ".page", ".component"}
+
 # Identifiers, including the __c / __r / __mdt suffixes that matter here.
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:__[cerbx]|__mdt)?", re.ASCII)
 # Apex/JS string literals.
@@ -96,6 +127,12 @@ class IndexStats:
     unmapped_folders: set[str] = field(default_factory=set)
     unreadable: list[str] = field(default_factory=list)
     by_type: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    #: Apex meta files whose content was deliberately not scanned.
+    skipped_apex_meta: int = 0
+    #: Bare-word alias hits refused by the distinctiveness guard, by alias.
+    #: Counted rather than discarded silently: if this ever gets large for a
+    #: name that turns out to be real, the stop list is what needs changing.
+    suppressed_bare: dict[str, int] = field(default_factory=lambda: defaultdict(int))
 
 
 def _metadata_type(rel: Path) -> str:
@@ -135,6 +172,11 @@ def _is_active(mdtype: str, content: str) -> bool:
         if "<active>false</active>" in low:
             return False
     return True
+
+
+def _is_apex_meta(rel: Path) -> bool:
+    n = rel.name.lower()
+    return n.endswith(".cls-meta.xml") or n.endswith(".trigger-meta.xml")
 
 
 def scan_workspace(root: Path) -> list[tuple[Path, Path]]:
@@ -191,6 +233,16 @@ async def index_workspace(run_id: str, workspace: Path) -> IndexStats:
             # Comments are separated BEFORE tokenising. Counting a name in a
             # comment as a reference keeps genuinely dead components alive
             # forever — a stale doc-comment or a commented-out block is not use.
+            # An Apex class or trigger meta file holds apiVersion and status
+            # and nothing else -- `<status>Active</status>` is the entire
+            # payload. It cannot carry a reference, so scanning it can only
+            # produce false ones. LWC and email meta files are NOT skipped:
+            # those carry targets, targetConfigs and object bindings that are
+            # genuine references.
+            if _is_apex_meta(rel):
+                stats.skipped_apex_meta += 1
+                continue
+
             ex = extract(abs_path.suffix.lower(), content)
             if ex.dynamic:
                 stats.dynamic_files.append(str(rel))
@@ -206,15 +258,26 @@ async def index_workspace(run_id: str, workspace: Path) -> IndexStats:
                 await _insert_literals(s, run_id, artifact_id, literals)
                 stats.literals += len(literals)
 
-            edges = _resolve(aliases, tokens, literals, mdtype, is_test, active,
-                             parents, comment_tokens)
+            edges, suppressed = _resolve(aliases, tokens, literals, mdtype,
+                                         is_test, active, parents,
+                                         comment_tokens,
+                                         abs_path.suffix.lower())
+            for alias_lc, n in suppressed.items():
+                stats.suppressed_bare[alias_lc] += n
             if edges:
                 await _insert_edges(s, run_id, artifact_id, edges)
                 stats.edges += len(edges)
 
+    # The most-suppressed names, so a wrong stop-list entry is visible rather
+    # than being a silent loss of recall.
+    top_suppressed = sorted(stats.suppressed_bare.items(),
+                            key=lambda kv: -kv[1])[:10]
     log.info("index_complete", artifacts=stats.artifacts, tokens=stats.tokens,
              literals=stats.literals, edges=stats.edges,
-             dynamic_files=len(stats.dynamic_files))
+             dynamic_files=len(stats.dynamic_files),
+             skipped_apex_meta=stats.skipped_apex_meta,
+             suppressed_bare_hits=sum(stats.suppressed_bare.values()),
+             top_suppressed=top_suppressed)
     return stats
 
 
@@ -280,7 +343,8 @@ def _resolve(
     active: bool,
     parents: dict[int, str] | None = None,
     comment_tokens: dict[str, int] | None = None,
-) -> list[dict]:
+    suffix: str = "",
+) -> tuple[list[dict], Counter[str]]:
     """Match extracted strings against the alias table.
 
     Tiering encodes how much a hit is worth. A layout naming a field is binding
@@ -289,6 +353,8 @@ def _resolve(
     regardless of how they were found - none of them prove current use.
     """
     seen: dict[tuple[int, str], dict] = {}
+    suppressed: Counter[str] = Counter()
+    is_code = suffix in CODE_SUFFIXES
     weak_consumer = mdtype in WEAK_CONSUMER_TYPES
     parents = parents or {}
 
@@ -304,7 +370,29 @@ def _resolve(
                          "ambiguous": ambiguous}
 
     def emit(alias_str: str, match_kind: str, base_tier_for: callable) -> None:
-        matches = aliases.get(alias_str, ())
+        # DISTINCTIVENESS GUARD -- applied by context, not to everything.
+        #
+        # `Active__c` reduces to the alias `active`, which matched the English
+        # word in a doc-comment and `<status>Active</status>` in metadata XML,
+        # collecting a dozen Apex classes that reference the field nowhere.
+        #
+        # But the same bare shape IS a reference in other places: `start` in an
+        # Apex class is the Batchable method, `'SKU'` quoted in JavaScript is a
+        # deliberate field name, and `{!Description}` is an explicit binding.
+        # Measuring an earlier, blunter version of this guard against the real
+        # workspace showed it deleting exactly those -- Tier A evidence, in the
+        # direction that produces a false UNUSED.
+        #
+        # So a bare word is refused only for a token sweep over markup, where
+        # element names and enum values are ordinary English. Code identifiers,
+        # string literals and merge fields are left alone.
+        if not is_code and match_kind == "token_sweep" and not is_sweepable(alias_str):
+            suppressed[alias_str] += 1
+            return
+        matches = [(cid, k) for cid, k in aliases.get(alias_str, ())
+                   if k not in NON_REFERENCE_KINDS]
+        if not matches:
+            return
         # AMBIGUITY GUARD. The same unqualified field name can exist on several
         # objects - `is_active__c` lives on two here - so a bare token match
         # would mark EVERY same-named field used, from a single mention. That
@@ -335,10 +423,18 @@ def _resolve(
     # name — a reason to look, never proof that anything uses it. Recorded rather
     # than discarded so a reviewer can see the trail.
     for tok in (comment_tokens or {}):
+        # Guarded unconditionally. This is the case that started it: "Retrieves
+        # active promoted records" in a docblock is prose, not a reference to
+        # Account.Active__c, in any file type.
+        if not is_sweepable(tok):
+            suppressed[tok] += 1
+            continue
         for component_id, alias_kind in aliases.get(tok, ()):
+            if alias_kind in NON_REFERENCE_KINDS:
+                continue
             add(component_id, alias_kind, "comment_mention", "C")
 
-    return list(seen.values())
+    return list(seen.values()), suppressed
 
 
 def _tier_rank(t: str) -> int:
