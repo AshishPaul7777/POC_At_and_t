@@ -138,8 +138,12 @@ export function DetailPanel({ detail }: { detail: Detail | null }) {
         clean: evidence.filter((e) => e.result === 'NO_EVIDENCE_FOUND').length,
         unclear: evidence.filter(
           (e) => e.result === 'INCONCLUSIVE' || e.result === 'NOT_APPLICABLE').length,
+        // Here the individual rows are loaded, so the two can be told apart.
+        inconclusive: evidence.filter((e) => e.result === 'INCONCLUSIVE').length,
+        notApplicable: evidence.filter((e) => e.result === 'NOT_APPLICABLE').length,
         gaps: gaps.length,
         flags: flags.length,
+        ctype: String(c.ctype),
       })}>Evidence ({evidence.length} collectors)</h2>
       <div className="sub">
         Every collector reports each time, including when it finds nothing.

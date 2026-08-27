@@ -567,7 +567,7 @@ export default function App() {
                             )}
                           </td>
                           <td style={{ color: 'var(--text-dim)' }}>{r.ctype}</td>
-                          <td title={explainEvidence(r)}>
+                          <td title={explainEvidence({ ...r, ctype: r.ctype })}>
                             <span className="strip">
                               {Array.from({ length: r.hits }).map((_, i) => <i key={`h${i}`} className="dot hit" />)}
                               {Array.from({ length: r.clean }).map((_, i) => <i key={`c${i}`} className="dot clean" />)}

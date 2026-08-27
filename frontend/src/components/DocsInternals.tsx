@@ -187,7 +187,7 @@ const STAGES: [string, string, string, string][] = [
   ['S10', 'inventory', 'Enumerate components and build the alias table every later stage matches against.', '~60'],
   ['S15', 'source.retrieve', 'Pull the metadata tree to disk once, so reference searching costs nothing after this.', '~20'],
   ['S20', 'index', 'Three extraction layers over every retrieved file, resolved against the alias table.', '0'],
-  ['S25', 'collect', 'Eight collectors, each recording what it found and what it did not.', '~200'],
+  ['S25', 'collect', 'Eight collectors, each recording what it found and what it did not. Six write evidence; two raise uncertainty flags instead.', '~200'],
   ['S30', 'graph', 'Nodes, edges, entry points, then breadth-first reachability.', '0'],
   ['S40', 'classify', 'Rules R0–R9 over the evidence. No model participates.', '0'],
   ['S50', 'rehearse', 'Validate-only destructive deploy. Deletes nothing.', '~5'],

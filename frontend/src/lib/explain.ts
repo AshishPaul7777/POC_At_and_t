@@ -38,9 +38,44 @@ export const collectorName = (id: string) => COLLECTOR_LABEL[id] ?? id
 export interface EvidenceCounts {
   hits: number
   clean: number
+  /** INCONCLUSIVE and NOT_APPLICABLE combined. The component list only has the
+   *  sum; the detail panel passes the two apart, below. */
   unclear: number
   gaps: number
   flags?: number
+  /** Split out where the caller has the individual rows. */
+  inconclusive?: number
+  notApplicable?: number
+  /** Drives the "why not more" line. Omit it and that line is left off. */
+  ctype?: string | null
+}
+
+/**
+ * Why a component shows fewer circles than there are collectors.
+ *
+ * The count varies and the UI gave no hint why, which reads as inconsistency
+ * rather than as scoping. Three separate reasons, all legitimate:
+ *
+ *   * Two collectors never draw a circle at all. Recent changes and dynamic
+ *     Apex raise uncertainty flags -- Tier D, a reason to distrust an UNUSED
+ *     verdict rather than evidence for or against use.
+ *   * Two are type-specific. "Does any record hold a value?" is meaningless
+ *     for an Apex class; "has this executed?" is meaningless for a field.
+ *   * The delete rehearsal costs API calls and touches the org, so it only
+ *     runs against components that are already deletion candidates.
+ */
+function whyNotMore(ctype: string): string[] {
+  const out: string[] = []
+  const apex = ctype.startsWith('Apex')
+
+  if (apex) out.push('Record data — an Apex component holds no records')
+  else out.push('Runtime execution — a field or object does not execute')
+
+  if (ctype === 'ApexMethod') {
+    out.push('Delete rehearsal — a method is not deployable on its own, so'
+      + ' Salesforce cannot be asked about deleting one')
+  }
+  return out
 }
 
 /** Plural without the "(s)" that makes generated prose look generated. */
@@ -56,9 +91,23 @@ export function explainEvidence(c: EvidenceCounts): string {
 
   if (c.hits) lines.push(`● ${n(c.hits, 'collector')} found a reference to it`)
   if (c.clean) lines.push(`○ ${n(c.clean, 'collector')} searched and found nothing`)
-  if (c.unclear) {
-    lines.push(`◍ ${n(c.unclear, 'collector')} could not give a trustworthy`
-      + ` answer, so it counts as neither`)
+  // NOT_APPLICABLE is not "could not answer" -- it is "this question does not
+  // apply here", which for a method's delete rehearsal is the normal case.
+  if (c.inconclusive) {
+    lines.push(`◍ ${n(c.inconclusive, 'collector')} looked but could not give`
+      + ` a trustworthy answer, so it counts as neither`)
+  }
+  if (c.notApplicable) {
+    lines.push(`◍ ${n(c.notApplicable, 'check')} does not apply to this kind of`
+      + ` component`)
+  }
+  if (c.unclear && !c.inconclusive && !c.notApplicable) {
+    // The list has only the combined count, so this covers both cases at once
+    // and has to agree in number with whichever it turned out to be.
+    lines.push(`◍ ${n(c.unclear, 'collector')}`
+      + `${c.unclear === 1 ? ' either could not give a usable answer or does'
+                           : ' either could not give a usable answer or do'}`
+      + ` not apply here`)
   }
   if (c.gaps) {
     lines.push(`✕ ${n(c.gaps, 'check')} could not run at all — while that is`
@@ -67,6 +116,17 @@ export function explainEvidence(c: EvidenceCounts): string {
   if (c.flags) {
     lines.push(`⚑ ${n(c.flags, 'uncertainty flag')} raised — something about`
       + ` this component resists static analysis`)
+  }
+
+  if (c.ctype) {
+    lines.push('')
+    lines.push('Not every check applies to every component:')
+    for (const reason of whyNotMore(c.ctype)) lines.push(`  · ${reason}`)
+    lines.push('  · Recent changes and dynamic Apex raise uncertainty flags'
+      + ' rather than evidence, so they never appear here')
+    if (!c.ctype.startsWith('ApexMethod')) {
+      lines.push('  · The delete rehearsal runs only for deletion candidates')
+    }
   }
 
   lines.push('')

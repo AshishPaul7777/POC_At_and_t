@@ -290,12 +290,23 @@ export function Docs() {
         </p>
       </DocSection>
 
-      <DocSection title="The eight collectors">
+      <DocSection title="The collectors">
         <p className="lead">
           Each answers one question, independently, and records its result{' '}
           <b>whether or not it found anything</b>. "Searched and found nothing" is
           a different claim from "never checked", and only the first supports a
           deletion.
+        </p>
+        <p className="note">
+          A component never shows all of them, and the count varies by design.
+          Two of these — recent changes and dynamic Apex — raise an uncertainty
+          flag rather than evidence, so they never appear as a marker at all.
+          Two more are type-specific: asking whether a record holds a value is
+          meaningless for an Apex class, and asking whether something executed
+          is meaningless for a field. And the delete rehearsal only runs for
+          components that are already deletion candidates, since it is the one
+          check that costs API calls. In practice a field or class shows five
+          markers, six when it was a candidate, and a method four or five.
         </p>
         <div className="twrap">
           <table className="doc-table">
@@ -322,7 +333,7 @@ export function Docs() {
         <div className="tiers">
           <div><span className="tier a">Tier A</span> deleting it breaks a deploy or a runtime path</div>
           <div><span className="tier b">Tier B</span> the org actually did something with it</div>
-          <div><span className="tier c">Tier C</span> consistent with use, nowhere near proof</div>
+          <div><span className="tier c">Tier C</span> the name appears somewhere, but nothing shown actually uses it — a test, a permission set, an inactive Flow, or an ambiguous name match</div>
           <div><span className="tier d">Tier D</span> not evidence — an uncertainty flag that <b>suppresses</b> UNUSED</div>
         </div>
       </DocSection>
