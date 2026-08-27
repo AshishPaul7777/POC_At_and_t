@@ -159,6 +159,29 @@ function ReachabilityDiagram() {
 
 /* ------------------------------------------------------------ the page */
 
+const CLAMPS: [string, string][] = [
+  ['R0 / R1 — out of scope', 'fixed at 100; no scoring runs'],
+  ['R3 — Tier-A evidence of use', 'at least 80'],
+  ['R4 — runtime or data evidence only', 'between 60 and 75'],
+  ['R3a — layout-only, no data', 'at most 70'],
+  ['R9 — nothing anywhere, coverage complete', 'at least 70'],
+  ['R7 — weak signal only', 'at most 65'],
+  ['R5 / R6 / R8 — review', 'at most 60'],
+  ['R2 — completeness gate failed', 'at most 55'],
+]
+
+/** Kept as a plain string so the alignment survives editing. */
+const SCORE_EXAMPLE = `  +15  static references     searched 721 files, nothing
+  +15  record data           no record holds a value
+  -10  dependency API        inconclusive (beta, blind to reports)
+  +15  config data           no API name stored as data
+  +15  reachability          no entry point can reach it
+  +15  delete rehearsal      Salesforce raised no objection
+  ---
+   65  sum
+ + 50  base
+  115  ->  rule R9 requires at least 70  ->  bounded to 100`
+
 const STAGES: [string, string, string, string][] = [
   ['S00', 'org.connect', 'Token, org identity, API budget, and a capability probe for Event Monitoring, the Dependency API, field history and code coverage.', '~10'],
   ['S10', 'inventory', 'Enumerate components and build the alias table every later stage matches against.', '~60'],
@@ -571,6 +594,156 @@ export function DocsInternals() {
           would turn <em>we could not check</em> into <em>there is nothing
           here</em> — which is precisely how a live component becomes a deletion
           candidate.
+        </p>
+      </DocSection>
+
+      {/* --------------------------------------------- reading the evidence */}
+      <DocSection title="Reading a component's evidence">
+        <p className="lead">
+          Open any component and the first thing shown is a row per collector —
+          every one that ran, including the ones that found nothing. The
+          component list summarises the same thing as a strip of circles.
+        </p>
+
+        <h3>What the circles mean</h3>
+        <p>
+          One circle per collector. They are counts rather than a sequence, so
+          four hollow circles means four checks searched and came back empty.
+        </p>
+        <div className="twrap">
+          <table className="doc-table">
+            <thead>
+              <tr><th>Circle</th><th>Means</th><th>Recorded as</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span className="strip"><i className="dot hit" /></span> filled</td>
+                <td>A collector found something that uses this</td>
+                <td><code>EVIDENCE_OF_USE</code></td>
+              </tr>
+              <tr>
+                <td><span className="strip"><i className="dot clean" /></span> hollow</td>
+                <td>
+                  A collector looked properly and found nothing. This is the
+                  claim a deletion rests on, which is why it is shown rather
+                  than left blank
+                </td>
+                <td><code>NO_EVIDENCE_FOUND</code></td>
+              </tr>
+              <tr>
+                <td><span className="strip"><i className="dot unclear" /></span> teal</td>
+                <td>
+                  A collector looked, but its answer cannot be trusted — or the
+                  check does not apply here. Never counted as absence
+                </td>
+                <td><code>INCONCLUSIVE</code> / <code>NOT_APPLICABLE</code></td>
+              </tr>
+              <tr>
+                <td><span className="strip"><i className="dot gap" /></span> red</td>
+                <td>
+                  A check that could not run at all. One of these means the
+                  component cannot be called UNUSED — rule R2 catches it first
+                </td>
+                <td>a coverage gap</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="note strong">
+          Hollow versus teal is the distinction that matters. "We looked and
+          found nothing" supports a deletion; "we could not check" does not,
+          and collapsing the two is how a live component becomes a candidate.
+        </p>
+
+        <h3>What each row carries</h3>
+        <ul className="limits">
+          <li><b>Result</b> — one of the five above.</li>
+          <li><b>Tier</b> — how much the finding is worth: A, B, C or D.</li>
+          <li>
+            <b>Weight</b> — a multiplier for partial signals, such as a
+            reference that exists only on a page layout.
+          </li>
+          <li>
+            <b>Payload</b> — the specifics: the literal query used, how many
+            artifacts were searched, the reachability path that was walked.
+            This is what makes a verdict checkable rather than merely stated.
+          </li>
+        </ul>
+      </DocSection>
+
+      {/* ------------------------------------------------------- confidence */}
+      <DocSection title="What the confidence score means">
+        <p className="lead">
+          A 0–100 number for <b>sorting the review queue</b>. It never decides a
+          verdict — the rules do that, and they run first. Ranking a queue
+          wrongly wastes someone's morning; deciding a verdict wrongly deletes
+          production metadata, so the two are kept apart in the code rather
+          than by convention.
+        </p>
+
+        <h3>How it is calculated</h3>
+        <p>
+          It starts at 50, every collector moves it, and the rule that fired
+          then clamps the result. The final number is bounded to 0–100.
+        </p>
+        <div className="rules">
+          <div className="rule">
+            <span className="rule-id">+30</span>
+            <span className="rule-cond">
+              per collector reporting <code>EVIDENCE_OF_USE</code>, multiplied
+              by that finding&rsquo;s weight
+            </span>
+          </div>
+          <div className="rule">
+            <span className="rule-id">+15</span>
+            <span className="rule-cond">
+              per collector reporting <code>NO_EVIDENCE_FOUND</code>
+            </span>
+          </div>
+          <div className="rule">
+            <span className="rule-id">&minus;10</span>
+            <span className="rule-cond">
+              per collector reporting <code>INCONCLUSIVE</code>
+            </span>
+          </div>
+          <div className="rule">
+            <span className="rule-id">&minus;30</span>
+            <span className="rule-cond">per uncertainty flag</span>
+          </div>
+        </div>
+        <p className="note">
+          A clean search <em>raising</em> the score reads oddly until you see
+          what the number measures. It is not "how likely is this used" — it is
+          how sure we are of <em>this verdict</em>. A search that came back
+          empty makes an UNUSED verdict more trustworthy, not less.
+        </p>
+
+        <h3>Then the rule clamps it</h3>
+        <div className="twrap">
+          <table className="doc-table">
+            <thead><tr><th>Rule that fired</th><th>Clamp</th></tr></thead>
+            <tbody>
+              {CLAMPS.map(([rule, clamp]) => (
+                <tr key={rule}><td>{rule}</td><td><code>{clamp}</code></td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <h3>A worked example</h3>
+        <p>
+          A custom field where five collectors searched and found nothing, and
+          the Dependency API came back inconclusive:
+        </p>
+        <pre className="cmd">{SCORE_EXAMPLE}</pre>
+
+        <p className="note strong">
+          Two things this number is not. It is not comparable across verdicts:
+          100 on a USED component and 100 on an UNUSED one express confidence in
+          two different claims, so sorting only means something within a single
+          verdict. And it is not a probability — nothing here is calibrated
+          against outcomes, so reading 70 as "70% likely" would be inventing
+          precision that does not exist.
         </p>
       </DocSection>
 
