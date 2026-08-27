@@ -1,16 +1,7 @@
 import type { Detail } from '../lib/api'
+import { collectorName, explainConfidence, explainEvidence } from '../lib/explain'
 
 /** Human wording for each collector, so a reviewer need not decode ids. */
-const COLLECTOR_LABEL: Record<string, string> = {
-  C10_static_index: 'Static references',
-  C20_data_population: 'Record data',
-  C30_dependency_api: 'Salesforce dependency API',
-  C40_runtime: 'Runtime execution',
-  C50_temporal: 'Recent changes',
-  C60_dynamic_apex: 'Dynamic Apex',
-  C70_reachability: 'Reachability from entry points',
-}
-
 const RESULT_LABEL: Record<string, string> = {
   EVIDENCE_OF_USE: 'FOUND',
   NO_EVIDENCE_FOUND: 'NOTHING FOUND',
@@ -34,7 +25,14 @@ export function DetailPanel({ detail }: { detail: Detail | null }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
         <code style={{ fontSize: 14 }}>{String(c.api_name)}</code>
         {cl && <span className={`badge ${cl.label}`}>{cl.label.replaceAll('_', ' ')}</span>}
-        {cl && <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>
+        {cl && <span className="has-tip"
+                     style={{ color: 'var(--text-faint)', fontSize: 11 }}
+                     title={explainConfidence({
+                       confidence: cl.confidence,
+                       verdict: cl.label,
+                       rule: cl.rule_trace?.[0]?.rule,
+                       breakdown: cl.score_breakdown,
+                     })}>
           confidence {Math.round(cl.confidence)}
         </span>}
       </div>
@@ -135,7 +133,14 @@ export function DetailPanel({ detail }: { detail: Detail | null }) {
 
       {/* Positive AND negative evidence at equal visual weight. A verdict of
           "nothing found" is only trustworthy if you can see where we looked. */}
-      <h2>Evidence ({evidence.length} collectors)</h2>
+      <h2 className="has-tip" title={explainEvidence({
+        hits: evidence.filter((e) => e.result === 'EVIDENCE_OF_USE').length,
+        clean: evidence.filter((e) => e.result === 'NO_EVIDENCE_FOUND').length,
+        unclear: evidence.filter(
+          (e) => e.result === 'INCONCLUSIVE' || e.result === 'NOT_APPLICABLE').length,
+        gaps: gaps.length,
+        flags: flags.length,
+      })}>Evidence ({evidence.length} collectors)</h2>
       <div className="sub">
         Every collector reports each time, including when it finds nothing.
         &ldquo;Searched and found nothing&rdquo; is a different claim from
@@ -144,7 +149,7 @@ export function DetailPanel({ detail }: { detail: Detail | null }) {
       {evidence.map((e) => (
         <div className="ev" key={e.collector_id}>
           <div className="ev-head">
-            <span className="ev-name">{COLLECTOR_LABEL[e.collector_id] ?? e.collector_id}</span>
+            <span className="ev-name">{collectorName(e.collector_id)}</span>
             <span className={`ev-result ${e.result}`}>
               {RESULT_LABEL[e.result] ?? e.result}
             </span>

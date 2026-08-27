@@ -10,6 +10,7 @@ import { Assistant } from './components/Assistant'
 import { Login } from './components/Login'
 import { auth, type Me } from './lib/auth'
 import { parseHash } from './lib/anchors'
+import { explainConfidence, explainEvidence } from './lib/explain'
 import { Nav, type View } from './components/Nav'
 import { Pipeline, type SnapshotStage } from './components/Pipeline'
 import {
@@ -548,7 +549,7 @@ export default function App() {
                     <thead>
                       <tr>
                         <th>Component</th><th>Type</th>
-                        <th title="One marker per collector: filled = found something, hollow = searched and found nothing, red = could not check">
+                        <th title="One marker per collector: filled = found something, hollow = searched and found nothing, teal = inconclusive, red = could not check. Hover a row for its own breakdown.">
                           Evidence
                         </th>
                         <th>Conf</th>
@@ -566,7 +567,7 @@ export default function App() {
                             )}
                           </td>
                           <td style={{ color: 'var(--text-dim)' }}>{r.ctype}</td>
-                          <td>
+                          <td title={explainEvidence(r)}>
                             <span className="strip">
                               {Array.from({ length: r.hits }).map((_, i) => <i key={`h${i}`} className="dot hit" />)}
                               {Array.from({ length: r.clean }).map((_, i) => <i key={`c${i}`} className="dot clean" />)}
@@ -574,7 +575,11 @@ export default function App() {
                               {Array.from({ length: r.gaps }).map((_, i) => <i key={`g${i}`} className="dot gap" />)}
                             </span>
                           </td>
-                          <td style={{ color: 'var(--text-faint)' }}>
+                          <td style={{ color: 'var(--text-faint)' }}
+                              title={r.confidence != null
+                                ? explainConfidence({ confidence: r.confidence,
+                                                      verdict: r.verdict })
+                                : 'Not classified yet.'}>
                             {r.confidence != null ? Math.round(r.confidence) : '-'}
                           </td>
                         </tr>
