@@ -15,7 +15,6 @@
  * Run:  node scripts/rebrand-report.mjs <source.html>
  */
 
-import { gunzipSync, gzipSync } from 'node:zlib'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,13 +32,21 @@ const LITERALS = [
   ['Bounteous PPT palette', 'NTO palette'],
 ]
 
-/** Replacement wordmark, matching the original's 146x24 box. */
-const WORDMARK = `<svg width="146" height="24" viewBox="0 0 146 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <text x="0" y="17" font-family="Nunito Sans, Helvetica, Arial, sans-serif"
-        font-size="15" font-weight="700" letter-spacing="-0.2" fill="currentColor">Northern Trail</text>
-  <text x="103" y="17" font-family="Nunito Sans, Helvetica, Arial, sans-serif"
-        font-size="15" font-weight="300" fill="currentColor">Outfitters</text>
-</svg>`
+/**
+ * Header/footer artwork to strip.
+ *
+ * Two kinds, both removed rather than replaced:
+ *
+ *   * The agency wordmark, drawn as vector paths with no text nodes. There is
+ *     no replacement mark to put there, and an invented one is worse than
+ *     none.
+ *   * An empty `image-slot` placeholder with `placeholder="Client logo"`,
+ *     which renders as a visible 108x36 box captioned "Client logo" -- the
+ *     report was built expecting a logo to be dropped in, and none was.
+ *
+ * The divider between them goes too: a 1px rule with nothing on either side
+ * of it is just a stray line.
+ */
 
 const src = process.argv[2]
 if (!src) {
@@ -50,31 +57,23 @@ if (!src) {
 let html = readFileSync(src, 'utf8')
 const before = html.length
 
-// ---- 1. the asset manifest: swap the wordmark ------------------------------
-const mRe = /(<script type="__bundler\/manifest">)([\s\S]*?)(<\/script>)/
-const m = html.match(mRe)
-if (!m) throw new Error('no bundler manifest found -- is this a bundled page?')
+// ---- 1. the template: strip the logos ------------------------------------
+// Order matters: the divider is matched together with the image before it, so
+// removing the images first would strand it.
+const HEADER = /<img src=\\"[^"]*?\\" alt=\\"Bounteous\\"[^>]*?>(\\n\s*)?<span style=\\"width: 1px;[^>]*?>\s*<\\u002Fspan>/
+const CLIENT_SLOT = /<x-import[^>]*?id=\\"client-logo\\"[^>]*?>(\s*<\\u002Fx-import>)?/
+const ANY_LOGO = /<img src=\\"[^"]*?\\" alt=\\"Bounteous\\"[^>]*?>/g
 
-const manifest = JSON.parse(m[2])
-const encoded = gzipSync(Buffer.from(WORDMARK, 'utf8')).toString('base64')
-
-let swapped = 0
-for (const [key, entry] of Object.entries(manifest)) {
-  if (entry.mime !== 'image/svg+xml') continue
-  let raw = Buffer.from(entry.data, 'base64')
-  if (entry.compressed) raw = gunzipSync(raw)
-  const svg = raw.toString('utf8')
-  // The wordmark is the one with no text nodes and a 146-wide box. Guarding on
-  // the dimensions stops this quietly replacing a chart or an icon if the
-  // report's assets ever change.
-  if (!/width="146"/.test(svg) || /<text/.test(svg)) continue
-  manifest[key] = { ...entry, compressed: true, data: encoded }
-  swapped++
+let removed = 0
+for (const [name, re] of [['header logo + divider', HEADER], ['client logo slot', CLIENT_SLOT]]) {
+  const next = html.replace(re, '')
+  if (next === html) throw new Error(`could not find the ${name} -- the report's markup has changed`)
+  html = next
+  removed++
 }
-if (swapped === 0) throw new Error('no wordmark asset matched -- refusing to ship a half-rebranded report')
-
-html = html.replace(mRe, (_all, open, _body, close) =>
-  open + JSON.stringify(manifest) + close)
+const before2 = html
+html = html.replace(ANY_LOGO, '')
+if (html !== before2) removed++
 
 // ---- 2. the template: swap the name ----------------------------------------
 for (const [from, to] of LITERALS) {
@@ -105,7 +104,7 @@ html = html.replace(/<title>[^<]*<\/title>/, '<title>Executive Summary</title>')
 mkdirSync(dirname(OUT), { recursive: true })
 writeFileSync(OUT, html, 'utf8')
 
-console.log(`wordmark assets replaced : ${swapped}`)
+console.log(`logo elements removed     : ${removed}`)
 console.log(`name occurrences replaced: ${remaining}`)
 console.log(`size                     : ${before} -> ${html.length} bytes`)
 console.log(`written                  : ${OUT}`)
