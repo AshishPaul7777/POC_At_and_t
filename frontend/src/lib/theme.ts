@@ -30,7 +30,12 @@
  */
 
 export interface Theme {
+  /** Stored in localStorage. Renaming one silently resets everybody's choice,
+   *  so the ids stay `att` / `att-dark` even though the labels do not. */
   id: string
+  /** What the picker shows. Generic on purpose: the palette is the brand's,
+   *  but a user choosing between two options only needs to know which is
+   *  which, and "AT&T" versus "AT&T dark" made the light one hard to name. */
   label: string
   mode: 'dark' | 'light'
   vars: Record<string, string>
@@ -43,7 +48,7 @@ const HERO_DARK = 'linear-gradient(120deg, #002837 0%, #00509E 55%, #009FDB 100%
 export const THEMES: Theme[] = [
   {
     id: 'att',
-    label: 'AT&T',
+    label: 'Light',
     mode: 'light',
     vars: {
       '--bg': '#FFFFFF',
@@ -82,7 +87,7 @@ export const THEMES: Theme[] = [
   },
   {
     id: 'att-dark',
-    label: 'AT&T dark',
+    label: 'Dark',
     mode: 'dark',
     vars: {
       // Built on AT&T's own dark teal rather than a neutral black, so the dark
