@@ -495,14 +495,19 @@ export default function App() {
           )}
 
           {view === 'dashboard' && (
-            <div className="split">
+            <div className="overview">
+              {/* Full width: the hero, the four counts and the composition
+                  chart are page-level context, and reading them inside a 46%
+                  column while the other half sat empty made no sense. The two
+                  columns start where the component list does. */}
+              {summary && (
+                <div className="overview-head">
+                  <Dashboard summary={summary} rows={allRows} headerOnly
+                             onPick={(v) => setVerdict(v)} />
+                </div>
+              )}
+              <div className="split">
               <div className="left">
-                {summary && (
-                  <div className="overview-head">
-                    <Dashboard summary={summary} rows={allRows} headerOnly
-                               onPick={(v) => setVerdict(v)} />
-                  </div>
-                )}
                 <div className="filters">
                   {/* "All" first and selected by default: the search box below
                       queries within the chosen verdict, so starting on a single
@@ -580,6 +585,7 @@ export default function App() {
                 </div>
               </div>
               <div className="right"><DetailPanel detail={detail} /></div>
+              </div>
             </div>
           )}
 

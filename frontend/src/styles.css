@@ -997,12 +997,36 @@ section:hover > .doc-h2 > .anchor-btn,
   border: 1px solid var(--border); border-radius: var(--r-sm);
   padding: 10px 13px; margin: 10px 0 0; overflow-x: auto; }
 
-/* ---------- Components Overview: the header above the table -------------- */
-/* The dashboard header and the component table are one page now, so the header
-   scrolls with the table rather than being pinned above it. */
-.overview-head { padding: 4px 4px 8px; }
+/* ---------- Components Overview ------------------------------------------ */
+/* One page, two zones. The header is page-level context -- the hero, the four
+   counts, the composition chart -- so it runs the full width. The two-column
+   split begins at the component list, where a row and its evidence genuinely
+   need to sit side by side.
+   
+   The page scrolls as a whole rather than pinning the header: at 546px of
+   content height, a pinned header this tall would leave the table a sliver. */
+.overview { display: flex; flex-direction: column; min-height: 100%; }
+.overview-head { padding: 22px 26px 4px; }
 .overview-head .dash { max-width: none; }
-.overview-head .cards { margin-bottom: 4px; }
+.overview-head .cards { margin-bottom: 0; }
+
+/* Inside this page the split is a band in the flow, not the whole viewport --
+   but a band with a definite height, so each column scrolls in place.
+   
+   Letting the columns grow instead made the page 7000px tall and put a row's
+   evidence thousands of pixels above the row you clicked: the detail panel is
+   only useful while it is still beside the list. */
+.overview > .split {
+  height: min(72vh, 640px);
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 900px) {
+  /* Side by side stops being readable well before the drawer breakpoint. */
+  .overview > .split { flex-direction: column; }
+  .overview > .split > .left { width: auto; min-width: 0;
+    border-right: none; border-bottom: 1px solid var(--border); }
+}
 
 /* The wordmark is the reveal control for the engineering views, so it needs to
    look clickable enough to try and not so clickable that it reads as a link. */
