@@ -29,6 +29,7 @@ const TO = 'Northern Trail Outfitters'
 /** Certificate names are identifiers, not prose: keep them shaped like one. */
 const LITERALS = [
   ['Bounteous_SSO_2023', 'NTO_SSO_2023'],
+  ['Bounteous_SSO_2025', 'NTO_SSO_2025'],
   ['Bounteous PPT palette', 'NTO palette'],
 ]
 
@@ -86,6 +87,18 @@ html = html.split(FROM).join(TO)
 // stray string is worse than one that was never rebranded.
 const leaked = (html.match(new RegExp(FROM, 'gi')) || []).length
 if (leaked > 0) throw new Error(`${leaked} occurrences of ${FROM} survived`)
+
+// The substitution is for prose. Anywhere the name lands inside an
+// identifier -- a certificate, an app name -- it produces something like
+// `Northern Trail Outfitters_SSO_2025`, with spaces where none belong. Those
+// need an entry in LITERALS above, so fail rather than ship one.
+const mangled = [...html.matchAll(new RegExp(`${TO}[_A-Za-z0-9]+`, 'g'))]
+  .map((m) => m[0])
+if (mangled.length) {
+  throw new Error(
+    `the name landed inside ${mangled.length} identifier(s); add them to ` +
+    `LITERALS: ${[...new Set(mangled)].join(', ')}`)
+}
 
 html = html.replace(/<title>[^<]*<\/title>/, '<title>Executive Summary</title>')
 
