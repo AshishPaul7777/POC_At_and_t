@@ -46,34 +46,54 @@ export function ExecutiveSummary() {
     return () => { alive = false }
   }, [])
 
-  // Track the space available so the scale follows a window resize or the
-  // sidebar collapsing, not just the first paint.
-  //
-  // Measured in a layout effect with no dependency list rather than through a
-  // ResizeObserver. RO is the obvious tool and it is what this used first, but
-  // its callbacks are delivered on the rendering lifecycle, so in a host that
-  // is not compositing -- a headless pane, a background tab -- it simply never
-  // fires and the report renders unscaled. Measuring on every render covers
-  // the sidebar case (App re-renders, so this does too) and the resize
-  // listener covers the rest.
+  /**
+   * Measure before the first paint, once.
+   *
+   * This has to happen before the frame loads, not after. The report positions
+   * its hero donut with script at load time and never recomputes, so widening
+   * the frame afterwards left the donut placed for the old width and the text
+   * ran under it again -- the very bug the scaling exists to fix. Deciding the
+   * layout width up front means the report only ever lays out once.
+   */
   useLayoutEffect(() => {
     const el = wrap.current
     if (!el) return
     const r = el.getBoundingClientRect()
-    const next = { w: Math.round(r.width), h: Math.round(r.height) }
-    // Guarded, or this would loop: setState on every render.
-    setBox((prev) => (prev.w === next.w && prev.h === next.h ? prev : next))
-  })
+    setBox({ w: Math.round(r.width), h: Math.round(r.height) })
+  }, [])
 
+  /**
+   * Follow later size changes -- a window resize, the sidebar collapsing.
+   *
+   * Deliberately NOT a per-render measurement. That version deadlocked React
+   * with "maximum update depth exceeded": the frame's layout width is the
+   * design width even while it paints scaled, which overflowed the column and
+   * raised a horizontal scrollbar, and the scrollbar stole height, which
+   * re-rendered the frame, which moved the scrollbar. `.exec-wrap` clips now
+   * so that path is closed, and driving this from observers rather than from
+   * rendering means a render can no longer schedule a render.
+   */
   useEffect(() => {
-    const onResize = () => {
-      const el = wrap.current
-      if (!el) return
+    const el = wrap.current
+    if (!el) return
+    const measure = () => {
       const r = el.getBoundingClientRect()
-      setBox({ w: Math.round(r.width), h: Math.round(r.height) })
+      const next = { w: Math.round(r.width), h: Math.round(r.height) }
+      setBox((prev) =>
+        // A pixel of jitter is not worth a re-render.
+        Math.abs(prev.w - next.w) < 2 && Math.abs(prev.h - next.h) < 2 ? prev : next)
     }
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
+    window.addEventListener('resize', measure)
+    // The sidebar changes this element's width without a window resize, and RO
+    // is the only thing that sees it. Its callbacks ride the rendering
+    // lifecycle, so a host that is not compositing never fires it -- which is
+    // acceptable, because nothing there is being looked at.
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null
+    ro?.observe(el)
+    return () => {
+      window.removeEventListener('resize', measure)
+      ro?.disconnect()
+    }
   }, [])
 
   if (state === 'missing') {
@@ -91,9 +111,13 @@ export function ExecutiveSummary() {
     )
   }
 
-  // Only ever scale down. Above the design width the report is happy to fill
-  // the space, and blowing it up would just make it blurry.
-  const scale = box.w > 0 ? Math.min(1, box.w / DESIGN_WIDTH) : 1
+  // Decided once, from the first measurement, and never revisited: changing
+  // the frame's layout width after load would reflow the report without
+  // re-running the script that placed its chart.
+  const designed = box.w > 0 && box.w < DESIGN_WIDTH
+  // The scale, by contrast, is safe to follow a resize -- it is a paint-time
+  // transform and reflows nothing.
+  const scale = designed ? box.w / DESIGN_WIDTH : 1
 
   return (
     <div className="exec-wrap" ref={wrap}>
@@ -103,7 +127,7 @@ export function ExecutiveSummary() {
         className="exec-frame"
         src={SRC}
         title="Executive summary"
-        style={scale < 1 ? {
+        style={designed ? {
           width: DESIGN_WIDTH,
           // Undo the scale so the frame still fills the height it was given;
           // without this the report would end short of the bottom.
