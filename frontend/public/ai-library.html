@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bounteous · Salesforce Custom Skill Suite</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B111C'/%3E%3Cpolygon points='16,7 24,11.5 16,16 8,11.5' fill='%23853EFF'/%3E%3Cpolygon points='8,11.5 16,16 16,25 8,20.5' fill='%23693AF4'/%3E%3Cpolygon points='24,11.5 16,16 16,25 24,20.5' fill='%2334B4FF'/%3E%3C/svg%3E">
+<script src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@200;300;400;600;700&display=swap');
+
+  :root{
+    --midnight:#0B111C;
+    --indigo:#33139F;
+    --deep-violet:#693AF4;
+    --purple-rain:#853EFF;
+    --electric-blue:#34B4FF;
+    --paper:#FFFFFF;
+    --surface-2:#F4F5F8;
+    --gray-600:#5B6472;
+    --gray-300:#D7DAE1;
+    --grad-hero: linear-gradient(90deg, #33139F 0%, #853EFF 100%);
+  }
+
+  *{ box-sizing:border-box; }
+  body{
+    margin:0;
+    font-family:'Nunito Sans', sans-serif;
+    background:var(--paper);
+    color:var(--midnight);
+  }
+
+  .hero{
+    background:var(--grad-hero);
+    padding:20px 32px;
+    display:flex;
+    align-items:center;
+    gap:20px;
+  }
+  .hero img{ height:22px; flex-shrink:0; }
+  .hero .divider{
+    width:1px;
+    height:24px;
+    background:rgba(255,255,255,0.3);
+  }
+  .hero .title-block h1{
+    font-size:20px;
+    font-weight:700;
+    color:#FFFFFF;
+    margin:0;
+    line-height:1.3;
+  }
+  .hero .title-block p{
+    font-size:13px;
+    font-weight:300;
+    color:#E7E1FF;
+    margin:2px 0 0;
+    line-height:1.4;
+  }
+
+  /* ---------- layout: sidenav + content ---------- */
+  .layout{
+    max-width:1400px;
+    margin:0 auto;
+    display:flex;
+    align-items:flex-start;
+    gap:0;
+  }
+
+  .sidenav{
+    width:236px;
+    flex-shrink:0;
+    padding:24px 12px 40px;
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+    position:sticky;
+    top:0;
+  }
+  .sidenav .sidenav-label{
+    font-size:11px;
+    font-weight:700;
+    letter-spacing:0.08em;
+    text-transform:uppercase;
+    color:var(--gray-600);
+    padding:8px 14px 6px;
+  }
+  .navitem{
+    font-family:inherit;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    width:100%;
+    background:transparent;
+    border:none;
+    border-radius:14px;
+    padding:11px 14px;
+    font-size:14px;
+    font-weight:600;
+    color:var(--midnight);
+    cursor:pointer;
+    text-align:left;
+    transition:background 0.15s ease, color 0.15s ease;
+  }
+  .navitem iconify-icon{
+    font-size:19px;
+    color:var(--deep-violet);
+    flex-shrink:0;
+  }
+  .navitem:hover{
+    background:var(--surface-2);
+  }
+  .navitem.active{
+    background:var(--grad-hero);
+    color:#FFFFFF;
+  }
+  .navitem.active iconify-icon{
+    color:#FFFFFF;
+  }
+  .navitem .count{
+    margin-left:auto;
+    font-size:11px;
+    font-weight:700;
+    background:rgba(11,17,28,0.08);
+    color:var(--gray-600);
+    border-radius:999px;
+    padding:2px 8px;
+    flex-shrink:0;
+  }
+  .navitem.active .count{
+    background:rgba(255,255,255,0.25);
+    color:#FFFFFF;
+  }
+
+  .content{
+    flex:1;
+    min-width:0;
+    border-left:1px solid var(--gray-300);
+  }
+
+  .section{ display:none; }
+  .section.active{ display:block; }
+
+  .section-intro{
+    padding:28px 32px 0;
+    max-width:900px;
+  }
+  .section-intro h2{
+    font-size:19px;
+    font-weight:700;
+    margin:0 0 6px;
+  }
+  .section-intro p{
+    font-size:13.5px;
+    font-weight:300;
+    line-height:1.6;
+    color:var(--gray-600);
+    margin:0;
+  }
+  .section-intro code{
+    background:var(--surface-2);
+    padding:2px 6px;
+    border-radius:6px;
+    font-size:12.5px;
+  }
+
+  .tabs{
+    padding:20px 32px 0;
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+  }
+  .tab{
+    font-family:inherit;
+    font-size:13px;
+    font-weight:600;
+    color:var(--deep-violet);
+    background:var(--surface-2);
+    border:1px solid transparent;
+    padding:8px 18px;
+    border-radius:999px;
+    cursor:pointer;
+    transition:background 0.15s ease, color 0.15s ease;
+  }
+  .tab:hover{
+    background:#EAE3FF;
+  }
+  .tab.active{
+    background:var(--grad-hero);
+    color:#FFFFFF;
+  }
+
+  .grid{
+    padding:28px 32px 56px;
+    display:grid;
+    grid-template-columns:repeat(auto-fill, minmax(270px, 1fr));
+    gap:24px;
+  }
+  .card.hidden{
+    display:none;
+  }
+
+  .card{
+    background:var(--paper);
+    border:1px solid var(--gray-300);
+    border-radius:24px;
+    padding:24px;
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+    box-shadow:0 2px 10px rgba(11,17,28,0.06);
+  }
+
+  .card-head{
+    display:flex;
+    align-items:flex-start;
+    flex-wrap:wrap;
+    gap:8px 12px;
+  }
+  .tag{
+    margin-left:auto;
+    font-size:10px;
+    font-weight:600;
+    letter-spacing:0.05em;
+    text-transform:uppercase;
+    color:var(--deep-violet);
+    background:var(--surface-2);
+    padding:4px 10px;
+    border-radius:999px;
+    flex-shrink:0;
+  }
+  .tag-published{
+    font-size:10px;
+    font-weight:600;
+    letter-spacing:0.05em;
+    text-transform:uppercase;
+    color:#1E8E5A;
+    background:#E4F6ED;
+    padding:4px 10px;
+    border-radius:999px;
+    flex-shrink:0;
+  }
+  .tag-pending{
+    font-size:10px;
+    font-weight:600;
+    letter-spacing:0.05em;
+    text-transform:uppercase;
+    color:#B4780A;
+    background:#FBF0DD;
+    padding:4px 10px;
+    border-radius:999px;
+    flex-shrink:0;
+  }
+  .icon-badge{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    width:40px;
+    height:40px;
+    border-radius:999px;
+    background:var(--surface-2);
+    flex-shrink:0;
+  }
+  .icon-badge iconify-icon{
+    font-size:22px;
+    color:var(--indigo);
+  }
+
+  .card h3{
+    font-size:18px;
+    font-weight:600;
+    color:var(--midnight);
+    margin:0;
+    flex:1 1 140px;
+    min-width:0;
+  }
+  .card h3 a{
+    color:inherit;
+    text-decoration:none;
+  }
+  .card h3 a:hover{
+    text-decoration:underline;
+  }
+
+  .card p.desc{
+    font-size:14px;
+    font-weight:300;
+    line-height:1.6;
+    color:var(--gray-600);
+    margin:0;
+  }
+
+  .meta-row{
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px;
+    font-size:11px;
+    color:var(--gray-600);
+  }
+  .meta-row .pill{
+    background:var(--surface-2);
+    border-radius:999px;
+    padding:3px 10px;
+    font-weight:600;
+  }
+
+  .usecase{
+    border-top:1px solid var(--gray-300);
+    padding-top:14px;
+  }
+  .usecase b{
+    display:block;
+    font-weight:600;
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+    color:var(--deep-violet);
+    margin-bottom:8px;
+  }
+  .usecase ul{
+    margin:0;
+    padding:0;
+    list-style:none;
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+  }
+  .usecase li{
+    display:flex;
+    gap:8px;
+    align-items:flex-start;
+    font-size:13px;
+    line-height:1.5;
+    color:var(--midnight);
+  }
+  .usecase li .check{
+    color:var(--indigo);
+    font-weight:700;
+  }
+
+  footer{
+    text-align:center;
+    padding:0 32px 40px;
+    font-size:12px;
+    font-weight:400;
+    color:var(--gray-600);
+  }
+  footer a{ color:var(--deep-violet); text-decoration:none; }
+  footer a:hover{ text-decoration:underline; }
+
+  @media (max-width: 860px){
+    .layout{ flex-direction:column; }
+    .sidenav{
+      position:relative;
+      width:100%;
+      flex-direction:row;
+      overflow-x:auto;
+      padding:16px 20px;
+    }
+    .content{ border-left:none; border-top:1px solid var(--gray-300); }
+  }
+</style>
+</head>
+<body>
+
+  <div class="hero">
+    <img src="https://www.bounteous.com/sites/default/files/bounteouslogos/BNT_WHITE_RGB.svg" alt="Bounteous">
+    <div class="divider"></div>
+    <div class="title-block">
+      <h1>Salesforce Custom Skill Suite</h1>
+      <p>Purpose-built Claude Code skills, agents, and hooks covering Salesforce documentation, audits, diagnostics, and health checks.</p>
+    </div>
+  </div>
+
+  <div class="layout">
+    <nav class="sidenav" aria-label="Suite sections">
+      <div class="sidenav-label">bounteous-sfdc plugin</div>
+      <button class="navitem active" data-section="skills" type="button"><iconify-icon icon="mdi:puzzle-outline"></iconify-icon>Skills<span class="count">21</span></button>
+      <button class="navitem" data-section="agents" type="button"><iconify-icon icon="mdi:robot-outline"></iconify-icon>Agents<span class="count">1</span></button>
+      <button class="navitem" data-section="hooks" type="button"><iconify-icon icon="mdi:shield-lock-outline"></iconify-icon>Hooks<span class="count">2</span></button>
+      <button class="navitem" data-section="commands" type="button"><iconify-icon icon="mdi:console-line"></iconify-icon>Commands<span class="count">3</span></button>
+    </nav>
+
+    <main class="content">
+
+      <!-- ===================== SKILLS ===================== -->
+      <section id="section-skills" class="section active">
+        <div class="section-intro">
+          <h2>Skills</h2>
+          <p>Reusable Claude Code skills, triggered by natural-language requests or slash commands, that generate reports, audits, and documentation directly from a Salesforce org or local metadata.</p>
+        </div>
+
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-filter="all" type="button">All Skills</button>
+          <button class="tab" data-filter="automation" type="button">Automation &amp; Code Health</button>
+          <button class="tab" data-filter="docs" type="button">Documentation &amp; Visualization</button>
+          <button class="tab" data-filter="impact" type="button">Dependency, Impact &amp; Migration Planning</button>
+          <button class="tab" data-filter="governance" type="button">Governance, Cleanup &amp; Security</button>
+          <button class="tab" data-filter="pipeline" type="button">Org Health Check Pipeline</button>
+        </div>
+
+        <div class="grid">
+
+          <div class="card" data-category="impact">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:sitemap-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-dependency-analyzer/">Dependency Analyzer</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Maps every reference to a field, class, trigger, flow, or object, and traces transitive dependency chains across the org.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Blast-radius check before deleting or refactoring</li>
+                <li><span class="check">&#10003;</span>Find every place a field or class is used</li>
+                <li><span class="check">&#10003;</span>Plan a safe removal order for legacy metadata</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="docs">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:cube-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-object-blueprint/">Object Blueprint</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Generates an interactive 8-tab HTML blueprint of any object — health score, fields, automation, layouts, and relationships.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>A 360° view of an object — fields, automation, layouts, and relationships in one place</li>
+                <li><span class="check">&#10003;</span>Onboard a new admin or developer to an object</li>
+                <li><span class="check">&#10003;</span>Audit an object's health before a redesign</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="docs">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:file-document-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-org-documentation/">Org Documentation</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Generates documentation for Apex classes, Apex triggers, and Flows across the org.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Keep technical docs current after every release</li>
+                <li><span class="check">&#10003;</span>Hand off a documented org to a new team</li>
+                <li><span class="check">&#10003;</span>Prep for an internal or client audit</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="impact">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:newspaper-variant-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-release-notes-summarizer/">Release Notes Summarizer</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Turns a given Salesforce release notes PDF into a plain-English summary of new features, retirements, and auto-enabled changes. Today it summarizes the release itself — org-specific impact analysis is on the roadmap.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Quickly digest a release before it lands</li>
+                <li><span class="check">&#10003;</span>Spot features retiring or auto-enabling</li>
+                <li><span class="check">&#10003;</span>Brief stakeholders on what's changing</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="governance">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:file-remove-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-unused-vf-pages/">Unused VF Pages</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Finds Visualforce pages with zero references anywhere in the org.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Clean up legacy metadata before a migration</li>
+                <li><span class="check">&#10003;</span>Confirm a page is safe to delete</li>
+                <li><span class="check">&#10003;</span>Org health audit ahead of a release</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="governance">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:cloud-check-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-cloud-footprint-audit/">Cloud Footprint Audit</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Audits which Salesforce clouds and features are licensed vs. actively used, producing an Excel utilization report.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>License renewal or cost-optimization review</li>
+                <li><span class="check">&#10003;</span>Spot underused clouds before you renew</li>
+                <li><span class="check">&#10003;</span>Report license utilization to finance</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="governance">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:shield-account-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-access-diagnostics/">Access Diagnostics</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Walks Salesforce's full access-resolution hierarchy to explain why a user can or can't see a record, object, or field.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Resolve a "why can't this user see this" ticket</li>
+                <li><span class="check">&#10003;</span>Explain how a user is able to see a record they shouldn't</li>
+                <li><span class="check">&#10003;</span>Trace sharing rules and role hierarchy fast</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="automation">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:bug-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-debug-log-analyzer/">Debug Log Analyzer</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Turns a raw Apex debug log or stack trace into a plain-English root-cause report with a proposed code fix.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Triage a failing trigger or flow in production</li>
+                <li><span class="check">&#10003;</span>Get a code-specific fix, not just the error</li>
+                <li><span class="check">&#10003;</span>Check governor-limit usage near a failure</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="automation">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:function-variant"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-formula-analyzer/">Formula Analyzer</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Audits formula fields for complexity and best practices, with concrete before/after refactor suggestions.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Review legacy formulas before they cause issues</li>
+                <li><span class="check">&#10003;</span>Simplify an overly complex formula field</li>
+                <li><span class="check">&#10003;</span>Audit every formula field on an object at once</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="governance">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:heart-pulse"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-integration-health-monitor/">Integration Health Monitor</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Assesses every integration in the org — Named Credentials, Connected Apps, Apex callouts — scored across security, resilience, and governance.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Visualize the full integration landscape at a glance</li>
+                <li><span class="check">&#10003;</span>Quarterly integration health check</li>
+                <li><span class="check">&#10003;</span>Spot risky or orphaned integrations</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="docs">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:database-sync-outline"></iconify-icon></div>
+              <h3>OrgLens</h3>
+              <span class="tag">npm package</span>
+            </div>
+            <p class="desc">Visualizes Salesforce transaction and DML flows (insert, update, delete) for a given object, helping trace execution paths.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Trace insert/update/delete execution paths for an object</li>
+                <li><span class="check">&#10003;</span>Debug why a DML operation cascades unexpectedly</li>
+                <li><span class="check">&#10003;</span>Visualize trigger/flow execution order in a transaction</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="automation">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:pulse"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-automation-health-analyzer/">Automation Health Analyzer</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Flags objects with risky automation — conflicting Flows/Triggers firing on the same record, missing recursion guards — and hands you a ready-to-assign ticket for each fix.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Find exactly which objects have risky or conflicting automation</li>
+                <li><span class="check">&#10003;</span>Prioritize refactoring effort instead of guessing from a complexity score</li>
+                <li><span class="check">&#10003;</span>Generate a ready-to-assign ticket for each automation fix</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="automation">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:timer-cog-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-batch-async-job-health-monitor/">Batch/Async Job Health Monitor</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Surfaces batch and async jobs that are silently failing or stuck, and flags scheduled jobs that collide or hit concurrency limits.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Catch silently failing or stuck jobs before they cause a discrepancy</li>
+                <li><span class="check">&#10003;</span>Spot colliding scheduled jobs and concurrency-limit conflicts</li>
+                <li><span class="check">&#10003;</span>Fix data-sync gaps before they become business-impacting</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="impact">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:api"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-api-version-drift-report/">API Version Drift Report</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Identifies which specific components will actually break — not just look outdated — if an API version is bumped, and which integrations face a real retirement deadline.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Plan a safe API version-bump sequence</li>
+                <li><span class="check">&#10003;</span>Identify integrations facing a real retirement deadline</li>
+                <li><span class="check">&#10003;</span>Avoid guessing what's safe to touch during an upgrade</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="impact">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:swap-horizontal-circle-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-custommetadata-migration-advisor/">Custom Metadata Migration Advisor</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Classifies every Custom Setting as Ready / Review / Keep as-is / Not Migratable / Delete Candidate, with a capacity check upfront and a risk-ordered migration plan.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Get a ready-to-execute migration plan and sequence</li>
+                <li><span class="check">&#10003;</span>Check capacity before migrating Custom Settings to Custom Metadata</li>
+                <li><span class="check">&#10003;</span>Avoid migrating settings that can't or shouldn't move</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="governance">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:chart-box-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-reports-dashboards-bloat-analyzer/">Reports/Dashboards Bloat Analyzer</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Scores every report and dashboard for staleness, broken references, and orphaned ownership, then produces a risk-ordered cleanup plan with a 30-day recoverable staging policy.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Clean up report/dashboard bloat without breaking a live page</li>
+                <li><span class="check">&#10003;</span>Catch reports owned by a deactivated user before deleting</li>
+                <li><span class="check">&#10003;</span>Confirm what's truly unused vs. embedded elsewhere</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="automation">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:code-tags-check"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-code-scanner/">Code Scanner</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Runs Salesforce Code Analyzer (PMD, ESLint, RetireJS, Flow Scanner, and more) against the project and writes every violation to an Excel report.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Baseline code quality before a release</li>
+                <li><span class="check">&#10003;</span>Catch security and best-practice violations across Apex, LWC, and Flows</li>
+                <li><span class="check">&#10003;</span>Feed static-analysis findings into the Org Health Check pipeline</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="pipeline">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:flask-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-apex-coverage-extractor/">Apex Coverage Extractor</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Runs all local Apex tests via the Salesforce CLI and extracts code coverage, flagging any class below 80% into an Excel report.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Confirm coverage before a deployment or release gate</li>
+                <li><span class="check">&#10003;</span>Spot classes sitting silently below threshold</li>
+                <li><span class="check">&#10003;</span>Feed coverage data into the Org Health Check pipeline</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="pipeline">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:database-export-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-org-health-extractor/">Org Health Extractor</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Runs 59 parallel extraction tasks — 54 SOQL queries, org limits, external client apps, and access checks — and consolidates everything into one workbook.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Kick off a full org health check with one command</li>
+                <li><span class="check">&#10003;</span>Get org limits, access risks, and 54 SOQL datasets in a single workbook</li>
+                <li><span class="check">&#10003;</span>Feed a consistent dataset into the doc and report generators</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="pipeline">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:file-word-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-org-health-doc-generator/">Org Health Doc Generator</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Turns the Org Health Extractor's consolidated workbook into a client-facing Health Check Word document, with AI insights grounded only in the org's own data.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Generate a client-ready Health Check .docx without manual authoring</li>
+                <li><span class="check">&#10003;</span>Ground every insight strictly in extracted org data, no guessing</li>
+                <li><span class="check">&#10003;</span>Feed the same insights into the HTML executive report</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card" data-category="pipeline">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:clipboard-pulse-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/skills/sfdc-org-health-audit-report/">Org Health Audit Report</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Builds the standalone HTML Executive Health Check report directly from the extractor's org data and AI-generated insights.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Produce a client-ready executive summary of org health</li>
+                <li><span class="check">&#10003;</span>Pair with the Word doc for a full stakeholder deliverable</li>
+                <li><span class="check">&#10003;</span>Validate extraction counts before publishing a report</li>
+              </ul>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ===================== AGENTS ===================== -->
+      <section id="section-agents" class="section">
+        <div class="section-intro">
+          <h2>Agents</h2>
+          <p>Standalone orchestrator agents that coordinate multiple skills into a single end-to-end pipeline, invoked directly or by name.</p>
+        </div>
+        <div class="grid">
+
+          <div class="card">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:robot-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/agents/org-health-check-orchestrator.md">Org Health Check Orchestrator</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <div class="meta-row"><span class="pill">Also known as Agent Iris</span><span class="pill">Tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion, Agent</span></div>
+            <p class="desc">End-to-end Org Health Check pipeline agent. Runs the Extractor, Code Scanner, and Coverage Extractor, invokes four enrichment skills (Cloud Footprint, Object Blueprint, Integration Health Monitor, Debug Log Analyzer), then generates the Health Check Word doc and the standalone HTML executive report.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Run a full org health check with a single request — "how is the health of my org"</li>
+                <li><span class="check">&#10003;</span>Coordinate 7+ skills into one client-deliverable pipeline</li>
+                <li><span class="check">&#10003;</span>Save hours of manual report assembly per engagement</li>
+              </ul>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ===================== HOOKS ===================== -->
+      <section id="section-hooks" class="section">
+        <div class="section-intro">
+          <h2>Hooks</h2>
+          <p>PreToolUse guardrails that run automatically before matching tool calls (<code>Bash | PowerShell | mcp__salesforce__deploy_metadata</code>) — no invocation needed, they're always active for anyone using the plugin.</p>
+        </div>
+        <div class="grid">
+
+          <div class="card">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:shield-lock-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/hooks/guard_deploy_block.py">Deploy Block Guard</a></h3>
+              <span class="tag-published">PreToolUse</span>
+            </div>
+            <p class="desc">Blocks any Salesforce deploy command or the <code>deploy_metadata</code> MCP tool outright. This suite is a read-only metadata/health-check toolset by design — there is nothing in scope to deploy.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Prevent an accidental <code>sf project deploy start</code> mid-session</li>
+                <li><span class="check">&#10003;</span>Block the <code>deploy_metadata</code> MCP tool unconditionally</li>
+                <li><span class="check">&#10003;</span>Keep every skill in the suite strictly read-only</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:folder-lock-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/hooks/guard_force_app_protect.py">force-app Protect Guard</a></h3>
+              <span class="tag-published">PreToolUse</span>
+            </div>
+            <p class="desc">Blocks any Bash/PowerShell command that would delete files under <code>force-app/</code> — treated as read-only reference metadata, never something to prune or clean up.</p>
+            <div class="usecase">
+              <b>Use cases</b>
+              <ul>
+                <li><span class="check">&#10003;</span>Stop an accidental <code>rm -rf force-app/...</code> mid-session</li>
+                <li><span class="check">&#10003;</span>Protect retrieved metadata from being pruned</li>
+                <li><span class="check">&#10003;</span>Enforce read-only handling of local SFDX source</li>
+              </ul>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ===================== COMMANDS ===================== -->
+      <section id="section-commands" class="section">
+        <div class="section-intro">
+          <h2>Commands</h2>
+          <p>Quick slash commands for everyday Salesforce CLI session checks — no metadata retrieval, just fast answers about the connected org.</p>
+        </div>
+        <div class="grid">
+
+          <div class="card">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:account-circle-outline"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/commands/sf-whoami.md">/sf-whoami</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Shows the current default org session, all authenticated orgs, connection health warnings, and quick-action CLI commands.</p>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:radar"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/commands/sf-trace.md">/sf-trace</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Sets an active trace flag for a Salesforce user with sensible default log levels, valid for 6 hours; offers to extend an existing flag.</p>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div class="icon-badge"><iconify-icon icon="mdi:update"></iconify-icon></div>
+              <h3><a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/commands/sf-api-status.md">/sf-api-status</a></h3>
+              <span class="tag-published">Published</span>
+            </div>
+            <p class="desc">Compares the project's configured Salesforce API version against the true latest version supported by the connected org, and flags if an upgrade is needed.</p>
+          </div>
+
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <footer>Bounteous &middot; Salesforce Practice &middot; bounteous-sfdc v1.12.0 &middot; <a href="https://bitbucket.org/hs2studio/bnts-claude-skills/src/main/plugins/sfdc/">source on Bitbucket</a></footer>
+
+  <script>
+    // sidenav section switching
+    var navitems = document.querySelectorAll('.navitem');
+    var sections = document.querySelectorAll('.section');
+    navitems.forEach(function(item){
+      item.addEventListener('click', function(){
+        navitems.forEach(function(n){ n.classList.remove('active'); });
+        item.classList.add('active');
+        var target = item.getAttribute('data-section');
+        sections.forEach(function(s){
+          s.classList.toggle('active', s.id === 'section-' + target);
+        });
+      });
+    });
+
+    // category tab filtering (scoped to the Skills grid)
+    var tabs = document.querySelectorAll('#section-skills .tab');
+    var cards = document.querySelectorAll('#section-skills .card');
+    tabs.forEach(function(tab){
+      tab.addEventListener('click', function(){
+        tabs.forEach(function(t){ t.classList.remove('active'); });
+        tab.classList.add('active');
+        var filter = tab.getAttribute('data-filter');
+        cards.forEach(function(card){
+          var show = filter === 'all' || card.getAttribute('data-category') === filter;
+          card.classList.toggle('hidden', !show);
+        });
+      });
+    });
+  </script>
+
+</body>
+</html>

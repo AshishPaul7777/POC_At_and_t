@@ -1046,3 +1046,9 @@ section:hover > .doc-h2 > .anchor-btn,
 .filters select:hover { border-color: var(--accent); color: var(--text); }
 .filters .linkish { font-size: 12.5px; }
 .filters .tb-hint { margin-left: auto; white-space: nowrap; }
+
+/* ---------- embedded standalone pages ------------------------------------ */
+/* Same isolation reasoning as the executive report, without the scaling: this
+   page reflows on its own, so it only needs the space it is given. */
+.embed-wrap { position: relative; height: 100%; background: var(--paper, #fff); }
+.embed-frame { width: 100%; height: 100%; border: 0; display: block; }

@@ -5,6 +5,7 @@ import { Docs } from './components/Docs'
 import { ExecutiveSummary } from './components/ExecutiveSummary'
 import { Graph } from './components/Graph'
 import { Admin } from './components/Admin'
+import { AiLibrary } from './components/AiLibrary'
 import { Assistant } from './components/Assistant'
 import { Login } from './components/Login'
 import { auth, type Me } from './lib/auth'
@@ -69,6 +70,7 @@ const TITLES: Record<View, string> = {
   report: 'Deliverables',
   assistant: 'Agent Iris',
   docs: 'About Me',
+  library: 'AI Library',
   admin: 'Access',
 }
 
@@ -669,6 +671,8 @@ export default function App() {
           )}
 
           {view === 'admin' && me.role === 'admin' && <Admin me={me} />}
+
+          {view === 'library' && <AiLibrary />}
 
           {view === 'docs' && <div className="pad"><Docs /></div>}
         </div>

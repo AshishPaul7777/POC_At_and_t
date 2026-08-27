@@ -1,5 +1,5 @@
 export type View = 'summary' | 'dashboard' | 'pipeline' | 'graph'
-  | 'report' | 'assistant' | 'docs' | 'admin'
+  | 'report' | 'assistant' | 'docs' | 'library' | 'admin'
 
 interface Item {
   id: View
@@ -26,6 +26,7 @@ const ICONS: Record<string, string> = {
   assistant: 'M21 12a8 8 0 01-8 8H7l-4 3v-5.5A8 8 0 1121 12z',
   admin: 'M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zm11 10v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75',
   summary: 'M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M9 13h6M9 17h6',
+  library: 'M4 19.5A2.5 2.5 0 016.5 17H20M4 19.5A2.5 2.5 0 016.5 22H20V2H6.5A2.5 2.5 0 004 4.5z',
 }
 
 const ITEMS: Item[] = [
@@ -34,6 +35,7 @@ const ITEMS: Item[] = [
   { id: 'report', label: 'Deliverables', icon: 'report', hint: 'Export the findings' },
   { id: 'assistant', label: 'Agent Iris', icon: 'assistant', hint: 'Ask about this org' },
   { id: 'docs', label: 'About Me', icon: 'docs', hint: 'Method, architecture, limits' },
+  { id: 'library', label: 'AI Library', icon: 'library', hint: 'Skills, agents and hooks' },
   // Engineering views. Hidden from the client-facing product and revealed by
   // clicking the wordmark five times -- see `revealed` below.
   { id: 'pipeline', label: 'Pipeline', icon: 'pipeline', hint: 'Live analysis progress', internal: true },
