@@ -46,7 +46,7 @@ export function Login({ onSignedIn }: { onSignedIn: () => void }) {
                   opacity=".55" />
           </svg>
           <div>
-            <h1>Org Cleanup</h1>
+            <h1>AI Health Assessment</h1>
             <p>Sign in to continue</p>
           </div>
         </div>

@@ -1,5 +1,5 @@
 /* =============================================================================
-   Org Cleanup Analyzer — AT&T brand system
+   AI Health Assessment — AT&T brand system
 
    Palette, geometry and type are taken from att.com. Four things do most of the
    brand work, and only one of them is colour:
@@ -982,3 +982,38 @@ section:hover > .doc-h2 > .anchor-btn,
   font-family: var(--mono); font-size: 12px; padding: 6px 10px;
   border: 1px solid var(--border-strong); border-radius: var(--r-sm);
   background: var(--sunken); color: var(--text); }
+
+/* =========================================================================
+   Executive summary — the embedded report
+   ====================================================================== */
+/* The report is a whole document with its own reset and dark background, so it
+   gets an isolated frame rather than being inlined into this one. */
+.exec-wrap { position: relative; height: 100%; background: var(--sunken); }
+.exec-frame { width: 100%; height: 100%; border: 0; display: block; }
+.exec-loading { position: absolute; inset: 0; display: flex;
+  align-items: center; justify-content: center;
+  color: var(--text-faint); font-size: 14px; pointer-events: none; }
+.cmd { font-family: var(--mono); font-size: 12.5px; background: var(--sunken);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 10px 13px; margin: 10px 0 0; overflow-x: auto; }
+
+/* ---------- Components Overview: the header above the table -------------- */
+/* The dashboard header and the component table are one page now, so the header
+   scrolls with the table rather than being pinned above it. */
+.overview-head { padding: 4px 4px 8px; }
+.overview-head .dash { max-width: none; }
+.overview-head .cards { margin-bottom: 4px; }
+
+/* The wordmark is the reveal control for the engineering views, so it needs to
+   look clickable enough to try and not so clickable that it reads as a link. */
+.nav-brand { cursor: pointer; user-select: none; }
+
+/* The filter row gained a type select and a clear action. */
+.filters select {
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text-dim); font-family: var(--ui); font-size: 12.5px;
+  padding: 6px 10px; border-radius: var(--r-pill); cursor: pointer;
+}
+.filters select:hover { border-color: var(--accent); color: var(--text); }
+.filters .linkish { font-size: 12.5px; }
+.filters .tb-hint { margin-left: auto; white-space: nowrap; }

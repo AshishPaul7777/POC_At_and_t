@@ -66,11 +66,18 @@ function HBars({ rows, max, colour }: {
 }
 
 export function Dashboard({
-  summary, rows, onPick,
+  summary, rows, onPick, headerOnly = false,
 }: {
   summary: Summary
   rows: ComponentRow[]
   onPick: (verdict: Verdict) => void
+  /** Render only as far as the composition chart.
+   *
+   *  The Components Overview page puts the component table directly beneath
+   *  this, so the cards that follow -- coverage, where to start, the review
+   *  queue, collectors -- would sit between a heading and the table it
+   *  introduces. They remain on their own pages. */
+  headerOnly?: boolean
 }) {
   const t = summary.totals
   const inScope = (t.USED ?? 0) + (t.UNUSED ?? 0) + (t.NEEDS_REVIEW ?? 0)
@@ -199,6 +206,7 @@ export function Dashboard({
           </div>
         </section>
 
+        {!headerOnly && (<>
         <section className="card">
           <h3>Analysis coverage</h3>
           <p className="why">
@@ -261,6 +269,7 @@ export function Dashboard({
             ))}
           </div>
         </section>
+        </>)}
       </div>
     </div>
   )

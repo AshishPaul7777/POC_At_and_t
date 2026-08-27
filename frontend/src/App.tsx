@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Dashboard } from './components/Dashboard'
 import { DetailPanel } from './components/DetailPanel'
 import { Docs } from './components/Docs'
+import { ExecutiveSummary } from './components/ExecutiveSummary'
 import { Graph } from './components/Graph'
 import { Admin } from './components/Admin'
 import { Assistant } from './components/Assistant'
@@ -61,15 +62,18 @@ function relative(d: Date): string {
 }
 
 const TITLES: Record<View, string> = {
-  dashboard: 'Overview',
+  summary: 'Executive Summary',
+  dashboard: 'Components Overview',
   pipeline: 'Pipeline',
-  results: 'Components',
   graph: 'Dependencies',
-  report: 'Report',
-  assistant: 'Assistant',
-  docs: 'How it works',
+  report: 'Deliverables',
+  assistant: 'Agent Iris',
+  docs: 'About Me',
   admin: 'Access',
 }
+
+/** How many clicks on the wordmark reveal the engineering views. */
+const REVEAL_CLICKS = 5
 
 /** Guards the hash: a junk fragment must not leave the app on no view at all. */
 const VIEWS = new Set(Object.keys(TITLES))
@@ -81,7 +85,7 @@ export default function App() {
   // render rather than switching views a frame later.
   const [view, setView] = useState<View>(() => {
     const t = parseHash()
-    return (t && VIEWS.has(t.view) ? t.view : 'dashboard') as View
+    return (t && VIEWS.has(t.view) ? t.view : 'summary') as View
   })
   const [summary, setSummary] = useState<Summary | null>(null)
   const [rows, setRows] = useState<ComponentRow[]>([])
@@ -89,7 +93,20 @@ export default function App() {
   const [detail, setDetail] = useState<Detail | null>(null)
   const [selected, setSelected] = useState<number | null>(null)
   const [graph, setGraph] = useState<GraphPayload | null>(null)
-  const [verdict, setVerdict] = useState<Verdict>('UNUSED')
+  // 'ALL' rather than a verdict: searching for a name while the UNUSED tab was
+  // selected returned nothing and read as a broken search, when the component
+  // was simply classified something else.
+  const [verdict, setVerdict] = useState<Verdict | 'ALL'>('ALL')
+  const [ctype, setCtype] = useState<string>('ALL')
+  // Engineering views, revealed by clicking the wordmark. Persisted so the
+  // reveal survives the reload that a deep link causes.
+  const [revealed, setRevealed] = useState(
+    () => localStorage.getItem('sfc.internal') === '1',
+  )
+  // A ref, not state: the count is a gesture being accumulated, nothing
+  // renders from it, and keeping it out of an updater is what makes the
+  // toggle below safe to run twice.
+  const brandClicks = useRef({ n: 0, at: 0 })
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
@@ -115,6 +132,41 @@ export default function App() {
   const [theme, setTheme] = useState(() => initialTheme())
 
   useEffect(() => { applyTheme(theme) }, [theme])
+
+  /** Five clicks on the wordmark toggles the engineering views.
+   *
+   *  The first version incremented inside a setState updater and toggled
+   *  `revealed` from within it. React double-invokes updaters in StrictMode
+   *  precisely to surface that kind of impurity, so the toggle ran twice and
+   *  the views never appeared. The count lives in a ref now and the toggle is
+   *  a plain, idempotent state update.
+   */
+  const onBrandClick = useCallback(() => {
+    const now = Date.now()
+    const c = brandClicks.current
+    // A click far from the last one starts a fresh gesture rather than
+    // accumulating towards a reveal nobody asked for.
+    c.n = now - c.at > 1500 ? 1 : c.n + 1
+    c.at = now
+    if (c.n < REVEAL_CLICKS) return
+    c.n = 0
+    setRevealed((was) => !was)
+  }, [])
+
+  // Persist outside the updater: writing storage from inside one is the same
+  // impurity that broke this the first time.
+  useEffect(() => {
+    localStorage.setItem('sfc.internal', revealed ? '1' : '0')
+  }, [revealed])
+
+  // Leaving an engineering view visible after it is hidden again would strand
+  // the user on a page the nav no longer offers a way back from.
+  useEffect(() => {
+    // While a run is going, Pipeline is visible whatever the reveal says --
+    // otherwise pressing "Run analysis" appears to do nothing for ten minutes.
+    if (activeRunId) return
+    if (!revealed && (view === 'pipeline' || view === 'graph')) setView('dashboard')
+  }, [revealed, view, activeRunId])
 
   useEffect(() => {
     auth.me()
@@ -251,9 +303,13 @@ export default function App() {
 
   useEffect(() => {
     if (!run) return
-    api.components(run.id, { verdict, q: query || undefined })
+    api.components(run.id, {
+      verdict: verdict === 'ALL' ? undefined : verdict,
+      ctype: ctype === 'ALL' ? undefined : ctype,
+      q: query || undefined,
+    })
       .then(setRows).catch((e) => setError(String(e)))
-  }, [run, verdict, query, summary])
+  }, [run, verdict, ctype, query, summary])
 
   useEffect(() => {
     if (!run || view !== 'graph' || graph) return
@@ -355,6 +411,8 @@ export default function App() {
         onToggle={() => { setCollapsePinned(true); setCollapsed((c) => !c) }}
         counts={{ unused: t.UNUSED ?? 0, review: t.NEEDS_REVIEW ?? 0 }}
         isAdmin={me.role === 'admin'}
+        revealed={revealed || !!activeRunId}
+        onBrandClick={onBrandClick}
       />
       {/* Tapping away is the gesture people expect from a drawer; without it
           the only way out is the hamburger, which the drawer covers. */}
@@ -429,31 +487,54 @@ export default function App() {
         )}
 
         <div className="content">
-          {view === 'dashboard' && (
-            <div className="pad">
-              {summary
-                ? <Dashboard summary={summary} rows={allRows}
-                             onPick={(v) => { setVerdict(v); setView('results') }} />
-                : <div className="empty">No completed analysis yet. Click "Run analysis".</div>}
-            </div>
-          )}
+          {view === 'summary' && <ExecutiveSummary />}
 
           {view === 'pipeline' && (
             <Pipeline runId={activeRunId ?? run.id} snapshotStages={snapStages}
                       live={!!activeRunId} onDone={onRunFinished} />
           )}
 
-          {view === 'results' && (
+          {view === 'dashboard' && (
             <div className="split">
               <div className="left">
+                {summary && (
+                  <div className="overview-head">
+                    <Dashboard summary={summary} rows={allRows} headerOnly
+                               onPick={(v) => setVerdict(v)} />
+                  </div>
+                )}
                 <div className="filters">
+                  {/* "All" first and selected by default: the search box below
+                      queries within the chosen verdict, so starting on a single
+                      verdict made a search for anything else look broken. */}
+                  <button data-active={verdict === 'ALL'} onClick={() => setVerdict('ALL')}>
+                    All ({VERDICTS.reduce((a, v) => a + (t[v] ?? 0), 0)})
+                  </button>
                   {VERDICTS.map((v) => (
                     <button key={v} data-active={verdict === v} onClick={() => setVerdict(v)}>
                       {v.replaceAll('_', ' ')} ({t[v] ?? 0})
                     </button>
                   ))}
-                  <input placeholder="filter by API name..." value={query}
+                  <select value={ctype} onChange={(e) => setCtype(e.target.value)}
+                          title="Component type">
+                    <option value="ALL">All types</option>
+                    {Object.entries(summary?.by_type ?? {})
+                      .sort((a, b) => a[0].localeCompare(b[0]))
+                      .map(([type, counts]) => (
+                        <option key={type} value={type}>
+                          {type} ({Object.values(counts as Record<string, number>)
+                            .reduce((x, y) => x + y, 0)})
+                        </option>
+                      ))}
+                  </select>
+                  <input placeholder="search any component by name..." value={query}
                          onChange={(e) => setQuery(e.target.value)} />
+                  {(verdict !== 'ALL' || ctype !== 'ALL' || query) && (
+                    <button className="linkish" onClick={() => {
+                      setVerdict('ALL'); setCtype('ALL'); setQuery('')
+                    }}>clear</button>
+                  )}
+                  <span className="tb-hint">{rows.length} shown</span>
                 </div>
                 <div className="twrap">
                   <table>
@@ -523,7 +604,7 @@ export default function App() {
               </div>
               {graph
                 ? <Graph data={graph} onSelect={onGraphSelect}
-                         onOpenComponent={(cid) => { open(cid); setView('results') }} />
+                         onOpenComponent={(cid) => { open(cid); setView('dashboard') }} />
                 : <div className="loading">Building graph...</div>}
             </div>
           )}

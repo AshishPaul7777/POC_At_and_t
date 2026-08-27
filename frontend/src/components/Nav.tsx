@@ -1,4 +1,5 @@
-export type View = 'dashboard' | 'pipeline' | 'results' | 'graph' | 'report' | 'assistant' | 'docs' | 'admin'
+export type View = 'summary' | 'dashboard' | 'pipeline' | 'graph'
+  | 'report' | 'assistant' | 'docs' | 'admin'
 
 interface Item {
   id: View
@@ -8,6 +9,10 @@ interface Item {
   /** Hidden from non-admins. The API refuses them anyway; this stops the nav
    *  advertising a page that would only 403. */
   adminOnly?: boolean
+  /** Hidden until the wordmark is clicked five times. Not a security boundary
+   *  -- the routes still work if typed -- just a way to keep engineering views
+   *  out of a client demo. */
+  internal?: boolean
 }
 
 /** Icons are inline SVG paths: no icon-font dependency, and they scale cleanly. */
@@ -20,21 +25,25 @@ const ICONS: Record<string, string> = {
   docs: 'M4 4h11a3 3 0 013 3v13H7a3 3 0 01-3-3zM9 9h7M9 13h7',
   assistant: 'M21 12a8 8 0 01-8 8H7l-4 3v-5.5A8 8 0 1121 12z',
   admin: 'M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zm11 10v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75',
+  summary: 'M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M9 13h6M9 17h6',
 }
 
 const ITEMS: Item[] = [
-  { id: 'dashboard', label: 'Overview', icon: 'dashboard', hint: 'Verdicts, coverage, where to start' },
-  { id: 'pipeline', label: 'Pipeline', icon: 'pipeline', hint: 'Live analysis progress' },
-  { id: 'results', label: 'Components', icon: 'results', hint: 'Every component and its evidence' },
-  { id: 'graph', label: 'Dependencies', icon: 'graph', hint: 'What reaches what' },
-  { id: 'report', label: 'Report', icon: 'report', hint: 'Export the findings' },
-  { id: 'assistant', label: 'Assistant', icon: 'assistant', hint: 'Ask about this org' },
-  { id: 'docs', label: 'How it works', icon: 'docs', hint: 'Method, architecture, limits' },
+  { id: 'summary', label: 'Executive Summary', icon: 'summary', hint: 'The report for the client' },
+  { id: 'dashboard', label: 'Components Overview', icon: 'results', hint: 'Every component and its evidence' },
+  { id: 'report', label: 'Deliverables', icon: 'report', hint: 'Export the findings' },
+  { id: 'assistant', label: 'Agent Iris', icon: 'assistant', hint: 'Ask about this org' },
+  { id: 'docs', label: 'About Me', icon: 'docs', hint: 'Method, architecture, limits' },
+  // Engineering views. Hidden from the client-facing product and revealed by
+  // clicking the wordmark five times -- see `revealed` below.
+  { id: 'pipeline', label: 'Pipeline', icon: 'pipeline', hint: 'Live analysis progress', internal: true },
+  { id: 'graph', label: 'Dependencies', icon: 'graph', hint: 'What reaches what', internal: true },
   { id: 'admin', label: 'Access', icon: 'admin', hint: 'Who can use this', adminOnly: true },
 ]
 
 export function Nav({
   view, onNav, running, collapsed, onToggle, counts, isAdmin = false,
+  revealed = false, onBrandClick,
 }: {
   view: View
   onNav: (v: View) => void
@@ -43,23 +52,27 @@ export function Nav({
   onToggle: () => void
   counts: { unused: number; review: number }
   isAdmin?: boolean
+  revealed?: boolean
+  onBrandClick?: () => void
 }) {
   return (
     <nav className={`nav ${collapsed ? 'collapsed' : ''}`}>
-      <div className="nav-brand">
+      <div className="nav-brand" onClick={onBrandClick}
+           title="AI Health Assessment">
         <svg viewBox="0 0 24 24" className="brand-mark" aria-hidden>
           <path d="M12 2l8 4.5v9L12 20l-8-4.5v-9z" fill="none" stroke="currentColor" strokeWidth="1.6" />
           <path d="M12 7l4 2.3v4.4L12 16l-4-2.3V9.3z" fill="currentColor" opacity=".55" />
         </svg>
         {!collapsed && (
           <span className="brand-text">
-            Org Cleanup<em>Analyzer</em>
+            AI Health<em>Assessment</em>
           </span>
         )}
       </div>
 
       <ul className="nav-list">
-        {ITEMS.filter((it) => !it.adminOnly || isAdmin).map((it) => (
+        {ITEMS.filter((it) => (!it.adminOnly || isAdmin)
+                      && (!it.internal || revealed)).map((it) => (
           <li key={it.id}>
             <button
               className="nav-item"
@@ -73,10 +86,10 @@ export function Nav({
               </svg>
               {!collapsed && <span className="nav-label">{it.label}</span>}
               {it.id === 'pipeline' && running && <i className="nav-dot" title="run in progress" />}
-              {!collapsed && it.id === 'results' && counts.unused > 0 && (
+              {!collapsed && it.id === 'dashboard' && counts.unused > 0 && (
                 <span className="nav-badge unused">{counts.unused}</span>
               )}
-              {!collapsed && it.id === 'results' && counts.unused === 0 && counts.review > 0 && (
+              {!collapsed && it.id === 'dashboard' && counts.unused === 0 && counts.review > 0 && (
                 <span className="nav-badge review">{counts.review}</span>
               )}
             </button>
