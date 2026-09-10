@@ -1,5 +1,5 @@
-export type View = 'summary' | 'dashboard' | 'pipeline' | 'graph'
-  | 'report' | 'assistant' | 'docs' | 'library' | 'admin'
+export type View = 'summary' | 'overview' | 'components' | 'examples' | 'explorer' | 'pipeline'
+  | 'graph' | 'report' | 'assistant' | 'docs' | 'library' | 'admin'
 
 interface Item {
   id: View
@@ -18,8 +18,11 @@ interface Item {
 /** Icons are inline SVG paths: no icon-font dependency, and they scale cleanly. */
 const ICONS: Record<string, string> = {
   dashboard: 'M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z',
+  overview: 'M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z',
   pipeline: 'M4 6h16M4 12h10M4 18h6',
   results: 'M4 5h16M4 10h16M4 15h10M4 20h7',
+  components: 'M4 5h16M4 10h16M4 15h10M4 20h7',
+  examples: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4',
   graph: 'M5 5a2 2 0 100 4 2 2 0 000-4zm14 0a2 2 0 100 4 2 2 0 000-4zM12 15a2 2 0 100 4 2 2 0 000-4zM7 7h10M6.5 9l4.5 5m6-5l-4.5 5',
   report: 'M6 2h9l5 5v15H6zM14 2v6h6M9 13h8M9 17h8',
   docs: 'M4 4h11a3 3 0 013 3v13H7a3 3 0 01-3-3zM9 9h7M9 13h7',
@@ -27,11 +30,15 @@ const ICONS: Record<string, string> = {
   admin: 'M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zm11 10v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75',
   summary: 'M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M9 13h6M9 17h6',
   library: 'M4 19.5A2.5 2.5 0 016.5 17H20M4 19.5A2.5 2.5 0 016.5 22H20V2H6.5A2.5 2.5 0 004 4.5z',
+  explorer: 'M3 5a2 2 0 012-2h4l2 2h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z',
 }
 
 const ITEMS: Item[] = [
   { id: 'summary', label: 'Executive Summary', icon: 'summary', hint: 'The report for the client' },
-  { id: 'dashboard', label: 'Components Overview', icon: 'results', hint: 'Every component and its evidence' },
+  { id: 'overview', label: 'Overview', icon: 'overview', hint: 'Results analytics for this run' },
+  { id: 'components', label: 'Components', icon: 'components', hint: 'Every component and its evidence' },
+  { id: 'examples', label: 'Examples', icon: 'examples', hint: 'How verdicts look for real scenarios' },
+  { id: 'explorer', label: 'Code Explorer', icon: 'explorer', hint: 'Browse the org as files, coloured by verdict' },
   { id: 'report', label: 'Deliverables', icon: 'report', hint: 'Export the findings' },
   { id: 'assistant', label: 'Agent Iris', icon: 'assistant', hint: 'Ask about this org' },
   { id: 'docs', label: 'About Me', icon: 'docs', hint: 'Method, architecture, limits' },
@@ -88,10 +95,10 @@ export function Nav({
               </svg>
               {!collapsed && <span className="nav-label">{it.label}</span>}
               {it.id === 'pipeline' && running && <i className="nav-dot" title="run in progress" />}
-              {!collapsed && it.id === 'dashboard' && counts.unused > 0 && (
+              {!collapsed && it.id === 'components' && counts.unused > 0 && (
                 <span className="nav-badge unused">{counts.unused}</span>
               )}
-              {!collapsed && it.id === 'dashboard' && counts.unused === 0 && counts.review > 0 && (
+              {!collapsed && it.id === 'components' && counts.unused === 0 && counts.review > 0 && (
                 <span className="nav-badge review">{counts.review}</span>
               )}
             </button>

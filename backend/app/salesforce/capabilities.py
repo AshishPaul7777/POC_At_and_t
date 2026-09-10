@@ -89,12 +89,33 @@ class OrgCapabilities:
         blind spots instead of implying completeness.
         """
         out: list[str] = []
+        local_event_logs = _local_event_log_files()
         if self.has_event_monitoring is False:
+            if local_event_logs:
+                out.append(
+                    "Salesforce Event Monitoring returned no EventLogFile rows. "
+                    "Local event-log CSVs ("
+                    + ", ".join(local_event_logs[:5])
+                    + (f" +{len(local_event_logs) - 5} more"
+                       if len(local_event_logs) > 5 else "")
+                    + ") are used for Apex execution, trigger, and callout "
+                    "evidence. Other Event Monitoring types (API, URI, Report, "
+                    "page views) remain unobservable."
+                )
+            else:
+                out.append(
+                    "Event Monitoring is unavailable in this org, so runtime access "
+                    "(API reads, page views, report exports) is unobservable. "
+                    "Components whose only caller is an external integration cannot "
+                    "be proven unused here."
+                )
+        elif self.has_event_monitoring is True:
             out.append(
-                "Event Monitoring is unavailable in this org, so runtime access "
-                "(API reads, page views, report exports) is unobservable. "
-                "Components whose only caller is an external integration cannot "
-                "be proven unused here."
+                "Event Monitoring EventLogFile rows are downloaded for types that "
+                "map to judged components (ApexExecution/Trigger/Callout, "
+                "ApexRestApi, LightningInteraction/PageView, RestApi, "
+                "UniqueQuery, DatabaseSave) and used as optional Tier-B runtime "
+                "evidence. Other event types (Login, URI, Flow, etc.) are skipped."
             )
         elif self.has_event_monitoring is None:
             out.append("Event Monitoring availability was not determined.")
@@ -125,6 +146,18 @@ class OrgCapabilities:
                 "and anything invisible to it will look unused."
             )
         return out
+
+
+def _local_event_log_files() -> list[str]:
+    """CSV filenames under EVENT_LOG_DIR / backend/event_data, if any."""
+    try:
+        from app.pipeline.event_logs import event_log_dir
+        root = event_log_dir()
+        if not root.is_dir():
+            return []
+        return sorted(p.name for p in root.glob("*.csv"))
+    except Exception:
+        return []
 
 
 async def probe(sf: SalesforceClient, alias: str, *, deep: bool = False) -> OrgCapabilities:
@@ -326,6 +359,19 @@ async def _probe_event_monitoring(sf: SalesforceClient, caps: OrgCapabilities) -
     except Exception as e:
         caps.probe_notes["event_monitoring"] = f"not queryable: {str(e)[:160]}"
         return False
+
+
+async def refresh_event_monitoring(
+    sf: SalesforceClient, caps: OrgCapabilities
+) -> bool:
+    """Re-probe EventLogFile and update ``caps`` in place. Returns True if now on."""
+    prev = caps.has_event_monitoring
+    caps.has_event_monitoring = await _probe_event_monitoring(sf, caps)
+    flipped = prev is False and caps.has_event_monitoring is True
+    if flipped:
+        log.info("event_monitoring_became_available",
+                 note=caps.probe_notes.get("event_monitoring"))
+    return flipped
 
 
 async def _probe_dependency_api(sf: SalesforceClient, caps: OrgCapabilities

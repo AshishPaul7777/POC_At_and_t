@@ -785,11 +785,12 @@ export function DocsInternals() {
               <li>Triggers, active Flows, workflow rules, validation rules</li>
               <li>Scheduled jobs</li>
               <li>Reports, dashboards, list views, quick actions, email templates</li>
-              <li>LWC, Aura, Visualforce</li>
+              <li>Visualforce pages</li>
+              <li>Exposed LWC / Aura (<code>isExposed</code> / global access)</li>
               <li>
                 Apex exposed as <code>@AuraEnabled</code>,{' '}
                 <code>@InvocableMethod</code>, <code>@RestResource</code>,{' '}
-                <code>global</code>, <code>webservice</code>,{' '}
+                <code>webservice</code>,{' '}
                 <code>Schedulable</code>, <code>Batchable</code>,{' '}
                 <code>Queueable</code>
               </li>
@@ -798,10 +799,13 @@ export function DocsInternals() {
           <div className="col-card bad">
             <h4>Not entry points — placement, not execution</h4>
             <ul>
-              <li>Page layouts, FlexiPages, compact layouts — presentation</li>
+              <li>Page layouts, FlexiPages, compact layouts — presentation for fields
+                  (FlexiPage placement of an LWC/Aura is Tier-A use via static index,
+                  not a graph root)</li>
               <li>Profiles and permission sets — who <em>could</em> see it</li>
               <li>An object's own definition file — a declaration</li>
-              <li>Tabs and applications — navigation</li>
+              <li>Tabs and applications — navigation for fields; UI placement is C10</li>
+              <li>Private (non-exposed) LWC / Aura — need a placer or importer</li>
             </ul>
           </div>
         </div>
@@ -833,12 +837,14 @@ export function DocsInternals() {
             ['R0', 'Managed package or namespaced', 'OUT OF SCOPE', 'scope'],
             ['R1', 'Standard object or standard field', 'OUT OF SCOPE', 'scope'],
             ['R2', 'Completeness gate failed — a required collector did not run', 'NEEDS REVIEW', 'review'],
-            ['R3', 'Any Tier-A evidence of use', 'USED', 'used'],
+            ['R3a', 'Layout-only Tier-A reference, and no record data', 'UNUSED', 'unused'],
+            ['R3', 'Any other Tier-A evidence of use', 'USED', 'used'],
             ['R4', 'No Tier A, but Tier B — the org actually did something with it', 'USED', 'used'],
-            ['R5', 'Apex entry point with no observed caller', 'NEEDS REVIEW', 'review'],
+            ['R5', 'Apex entry point or test class with no observed caller', 'NEEDS REVIEW', 'review'],
             ['R6', 'Any Tier-D uncertainty flag', 'NEEDS REVIEW', 'review'],
+            ['R5b', 'Apex unreachable from any entry point', 'UNUSED', 'unused'],
             ['R7', 'Weak or inconclusive evidence only', 'NEEDS REVIEW', 'review'],
-            ['R8', 'Referenced by something that is not itself UNUSED', 'NEEDS REVIEW', 'review'],
+            ['R8', 'Referenced by something that is not itself UNUSED (post-pass)', 'NEEDS REVIEW', 'review'],
             ['R9', 'Nothing anywhere, and coverage was complete', 'UNUSED', 'unused'],
           ] as const).map(([id, cond, verdict, kind]) => (
             <div className="rule" key={id}>
@@ -850,9 +856,10 @@ export function DocsInternals() {
           ))}
         </div>
         <p className="note strong">
-          Note the shape of it. Exactly one rule produces UNUSED, it sits last,
-          and it fires only when every other rule has declined <em>and</em>{' '}
-          coverage was complete. Everything ambiguous resolves upward into review.
+          UNUSED can come from R3a (layout-only fields), R5b (unreachable Apex),
+          or R9 (clean no-evidence). Ambiguity — flags, entry points, incomplete
+          coverage — resolves upward into review. R8 is a post-pass after every
+          component has a provisional verdict.
         </p>
         <p className="note">
           Confidence is a 0–100 number used to sort the review queue. It never

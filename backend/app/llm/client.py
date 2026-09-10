@@ -10,8 +10,9 @@ through it. Corporate deployments almost always sit behind such a proxy, and a
 client that only speaks to the vendor's public endpoint is unusable there.
 
 The hard boundary, enforced by construction rather than by prompt wording: **this
-module is never given the ability to decide a verdict.** The classifier runs
-first and the verdict arrives here as read-only context. See ``narrate.py``.
+module never invents UNUSED.** Narration may only nudge UNUSED toward
+NEEDS_REVIEW, or confirm NEEDS_REVIEW → USED from already-listed evidence.
+See ``narrate.py``.
 """
 
 from __future__ import annotations
@@ -162,44 +163,82 @@ class LLMClient:
         Behind a gateway, tool-calling and native structured-output support are
         not guaranteed, and a hard dependency on them would break exactly the
         deployment this needs to work in.
+
+        Rate limits (HTTP 429 / "rate limit") are retried with exponential
+        backoff up to ``llm_rate_limit_retries`` times.
         """
         import time
 
-        model = self._build()
         digest = hashlib.sha256((system + "\x00" + user).encode()).hexdigest()
         started = time.monotonic()
+        max_attempts = 1 + max(0, int(self._s.llm_rate_limit_retries))
+        base_sleep = max(0.5, float(self._s.llm_rate_limit_sleep_seconds))
+        last_err: Exception | None = None
+        resp = None
 
-        try:
-            resp = await model.ainvoke([("system", system), ("human", user)])
-        except Exception as e:
-            # A model that rejects `temperature` is a configuration mismatch, not
-            # a failure: drop the parameter and retry once. Silently giving up
-            # here would disable narration for every newer model.
-            if "temperature" in str(e).lower() \
-                    and ("deprecat" in str(e).lower() or "unsupported" in str(e).lower()):
-                # Serialised: narration fans out concurrently, so without this
-                # lock every in-flight call races to rebuild the model and only
-                # the first one succeeds. Re-check inside the lock so the repair
-                # happens once, not once per caller.
-                async with self._repair_lock:
-                    if self._temperature_ok:
-                        log.info("llm_temperature_unsupported", model=self._model_name)
-                        self._temperature_ok = False
-                        self._model = None
-                        self._build()
-                try:
-                    resp = await self._build().ainvoke(
-                        [("system", system), ("human", user)])
-                except Exception as e2:
-                    log.warning("llm_call_failed", error=str(e2)[:300])
-                    return LLMResult(text="", parsed=None, model=self._model_name,
-                                     provider=self._provider, prompt_sha256=digest,
-                                     error=str(e2)[:400])
-            else:
+        for attempt in range(max_attempts):
+            try:
+                resp = await self._ainvoke_once(system, user)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if self.is_rate_limit(e) and attempt + 1 < max_attempts:
+                    delay = base_sleep * (2 ** attempt)
+                    log.warning(
+                        "llm_rate_limited_retry",
+                        attempt=attempt + 1,
+                        max_attempts=max_attempts,
+                        sleep_s=round(delay, 1),
+                        detail=str(e)[:200],
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                # Temperature unsupported: repair once, then one more invoke
+                # (without counting against rate-limit budget).
+                if "temperature" in str(e).lower() \
+                        and ("deprecat" in str(e).lower()
+                             or "unsupported" in str(e).lower()):
+                    async with self._repair_lock:
+                        if self._temperature_ok:
+                            log.info("llm_temperature_unsupported",
+                                     model=self._model_name)
+                            self._temperature_ok = False
+                            self._model = None
+                            self._build()
+                    try:
+                        resp = await self._ainvoke_once(system, user)
+                        last_err = None
+                        break
+                    except Exception as e2:
+                        last_err = e2
+                        if self.is_rate_limit(e2) and attempt + 1 < max_attempts:
+                            delay = base_sleep * (2 ** attempt)
+                            log.warning(
+                                "llm_rate_limited_retry",
+                                attempt=attempt + 1,
+                                max_attempts=max_attempts,
+                                sleep_s=round(delay, 1),
+                                detail=str(e2)[:200],
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+                        log.warning("llm_call_failed", error=str(e2)[:300])
+                        return LLMResult(
+                            text="", parsed=None, model=self._model_name,
+                            provider=self._provider, prompt_sha256=digest,
+                            error=str(e2)[:400])
                 log.warning("llm_call_failed", error=str(e)[:300])
                 return LLMResult(text="", parsed=None, model=self._model_name,
                                  provider=self._provider, prompt_sha256=digest,
                                  error=str(e)[:400])
+
+        if resp is None:
+            err = str(last_err)[:400] if last_err else "no response"
+            log.warning("llm_call_failed", error=err)
+            return LLMResult(text="", parsed=None, model=self._model_name,
+                             provider=self._provider, prompt_sha256=digest,
+                             error=err)
 
         latency = int((time.monotonic() - started) * 1000)
         text = _as_text(resp)
@@ -223,6 +262,10 @@ class LLMClient:
             output_tokens=meta.get("output_tokens"),
             latency_ms=latency, refused=refused,
         )
+
+    async def _ainvoke_once(self, system: str, user: str):
+        model = self._build()
+        return await model.ainvoke([("system", system), ("human", user)])
 
 
     def bind(self, tools: list[dict[str, Any]]):

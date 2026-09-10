@@ -24,6 +24,7 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -188,16 +189,46 @@ class SalesforceCli:
                    timeout: float = 600.0) -> tuple[int, str, str]:
         cmd = [self._bin, *args]
         log.debug("sf_cli", args=args)
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            env=self._env(token), cwd=str(self._ws),
-        )
+        # Prefer create_subprocess_exec when the loop supports it. On Windows,
+        # uvicorn --reload uses a SelectorEventLoop that raises NotImplementedError
+        # for subprocess transports — fall back to a thread + subprocess.run.
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._env(token),
+                cwd=str(self._ws),
+            )
+        except NotImplementedError:
+            return await asyncio.to_thread(
+                self._run_sync, cmd, token=token, timeout=timeout,
+            )
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except TimeoutError:
             proc.kill()
             raise CliError(f"`sf {' '.join(args[:3])}` timed out after {timeout}s") from None
         return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
+
+    def _run_sync(self, cmd: list[str], *, token: str | None,
+                  timeout: float) -> tuple[int, str, str]:
+        try:
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                env=self._env(token),
+                cwd=str(self._ws),
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise CliError(
+                f"`sf {' '.join(cmd[1:4])}` timed out after {timeout}s"
+            ) from e
+        out = (completed.stdout or b"").decode(errors="replace")
+        err = (completed.stderr or b"").decode(errors="replace")
+        return completed.returncode or 0, out, err
 
     async def login(self) -> None:
         """Hand the CLI the token Python already holds.

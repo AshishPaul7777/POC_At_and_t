@@ -31,7 +31,10 @@ by what the documentation implies:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
+from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import structlog
 from sqlalchemy import text
@@ -226,6 +229,185 @@ async def inventory(run_id: str, sf: SalesforceClient) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# LWC / Aura (retrieve-backed — isExposed/targets live in meta XML)
+# ---------------------------------------------------------------------------
+
+_XML_NS_STRIP = re.compile(r"\{[^}]+\}")
+
+
+def _local(tag: str) -> str:
+    return _XML_NS_STRIP.sub("", tag)
+
+
+async def inventory_ui_from_workspace(run_id: str, workspace: Path) -> dict[str, int]:
+    """Inventory unmanaged LWC and Aura bundles from the retrieved workspace.
+
+    Prefer retrieve-backed inventory over Tooling: ``isExposed``, targets and
+    Aura ``access`` / ``implements`` live in the meta/cmp files, not in the
+    Tooling row. Called after retrieve, before index, so aliases exist when
+    the indexer resolves FlexiPage and cross-bundle references.
+    """
+    counts = {"LightningComponentBundle": 0, "AuraDefinitionBundle": 0,
+              "LightningComponentBundle(packaged, excluded)": 0,
+              "AuraDefinitionBundle(packaged, excluded)": 0}
+    async with session_scope() as s:
+        for abs_path, rel in _ui_bundle_roots(workspace):
+            folder = rel.parts[0].lower()
+            bundle = rel.parts[1] if len(rel.parts) > 1 else abs_path.name
+            if folder == "lwc":
+                meta = abs_path / f"{bundle}.js-meta.xml"
+                attrs, namespaced = _parse_lwc_meta(meta, bundle)
+                ctype = "LightningComponentBundle"
+            else:
+                meta = _aura_cmp_path(abs_path, bundle)
+                attrs, namespaced = _parse_aura_cmp(meta, bundle)
+                ctype = "AuraDefinitionBundle"
+            if namespaced:
+                counts[f"{ctype}(packaged, excluded)"] += 1
+                continue
+            cid = await _insert_component(
+                s, run_id, ctype, bundle,
+                label=attrs.get("master_label") or bundle,
+                attrs=attrs,
+            )
+            await _insert_aliases(
+                s, run_id, cid,
+                al.ui_bundle_aliases(api_name=bundle),
+            )
+            counts[ctype] += 1
+
+    await _record_collector(
+        run_id, "C00_inventory_ui_bundles", "structural", "*",
+        status="OK",
+        method="scan retrieved lwc/ and aura/ folders; parse js-meta.xml / .cmp",
+        artifacts=counts["LightningComponentBundle"] + counts["AuraDefinitionBundle"],
+        hits=counts["LightningComponentBundle"] + counts["AuraDefinitionBundle"],
+    )
+    log.info("inventory_ui_complete", run_id=run_id, **counts)
+    return counts
+
+
+def _ui_bundle_roots(workspace: Path) -> list[tuple[Path, Path]]:
+    """Yield (absolute bundle dir, relative path under unpackaged)."""
+    out: list[tuple[Path, Path]] = []
+    seen: set[str] = set()
+    for base in workspace.rglob("unpackaged"):
+        if not base.is_dir():
+            continue
+        for folder in ("lwc", "aura"):
+            root = base / folder
+            if not root.is_dir():
+                continue
+            for child in root.iterdir():
+                if not child.is_dir() or child.name.startswith("."):
+                    continue
+                key = f"{folder}/{child.name}".lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append((child, Path(folder) / child.name))
+    return out
+
+
+def _parse_lwc_meta(meta: Path, bundle: str) -> tuple[dict, bool]:
+    """Return (attrs, is_namespaced). Missing meta => private unmanaged defaults."""
+    attrs: dict = {
+        "is_exposed": False,
+        "targets": [],
+        "master_label": bundle,
+        "is_entry_point": False,
+    }
+    if not meta.is_file():
+        return attrs, False
+    try:
+        text_body = meta.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return attrs, False
+    # Managed package marker in path/name is rare; namespace in meta is uncommon
+    # for LWC — namespaced bundles usually live under a namespace folder. Treat
+    # explicit <namespace> if present.
+    try:
+        root = ET.fromstring(text_body)
+    except ET.ParseError:
+        return attrs, False
+
+    targets: list[str] = []
+    exposed = False
+    label = bundle
+    namespace = None
+    for el in root.iter():
+        name = _local(el.tag).lower()
+        if name == "isexposed" and (el.text or "").strip().lower() == "true":
+            exposed = True
+        elif name == "masterlabel" and el.text:
+            label = el.text.strip()
+        elif name == "target" and el.text:
+            targets.append(el.text.strip())
+        elif name == "namespace" and el.text:
+            namespace = el.text.strip()
+    attrs = {
+        "is_exposed": exposed,
+        "targets": targets,
+        "master_label": label,
+        # Exposed LWC can still be wired by an admin without any static ref —
+        # same R5 posture as externally invocable Apex.
+        "is_entry_point": exposed,
+    }
+    return attrs, bool(namespace)
+
+
+def _aura_cmp_path(bundle_dir: Path, bundle: str) -> Path | None:
+    for cand in (bundle_dir / f"{bundle}.cmp", bundle_dir / f"{bundle}.app"):
+        if cand.is_file():
+            return cand
+    # Fall back to any .cmp in the folder.
+    for cand in bundle_dir.glob("*.cmp"):
+        return cand
+    return None
+
+
+def _parse_aura_cmp(meta: Path | None, bundle: str) -> tuple[dict, bool]:
+    attrs: dict = {
+        "access": None,
+        "interfaces": [],
+        "is_exposed": False,
+        "is_entry_point": False,
+        "master_label": bundle,
+    }
+    if meta is None or not meta.is_file():
+        return attrs, False
+    try:
+        text_body = meta.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return attrs, False
+
+    # Namespace form: <namespace:Bundle — packaged if not c:
+    namespaced = bool(re.search(
+        r"<(?!aura:|c:)([A-Za-z]\w*):" + re.escape(bundle), text_body))
+
+    access_m = re.search(
+        r"""\baccess\s*=\s*["'](global|public|private)["']""",
+        text_body, re.I)
+    access = (access_m.group(1).lower() if access_m else "public")
+    interfaces = re.findall(
+        r"""\bimplements\s*=\s*["']([^"']+)["']""", text_body, re.I)
+    iface_list: list[str] = []
+    for blob in interfaces:
+        iface_list.extend(p.strip() for p in blob.split(",") if p.strip())
+
+    # global/public surfaces can still be composed in Experience Builder etc.
+    exposed = access in ("global", "public")
+    attrs = {
+        "access": access,
+        "interfaces": iface_list,
+        "is_exposed": exposed,
+        "is_entry_point": exposed,
+        "master_label": bundle,
+    }
+    return attrs, namespaced
+
+
+# ---------------------------------------------------------------------------
 # Apex
 # ---------------------------------------------------------------------------
 
@@ -260,19 +442,49 @@ async def _inventory_apex(s, run_id: str, sf: SalesforceClient) -> dict[str, int
             continue
         st = c.get("SymbolTable") or {}
         is_test = _is_test_class(c["Name"], st)
+        methods = st.get("methods") or []
+        class_annotations = [
+            a.get("name") for a in (st.get("annotations") or [])
+        ]
+        from app.pipeline.apex_kind import classify_apex_class_kind, list_apex_class_kinds
+
+        method_attr_snapshots: list[dict] = []
+        for mth in methods:
+            mods = mth.get("modifiers") or []
+            annotations = [a.get("name") for a in (mth.get("annotations") or [])]
+            method_attr_snapshots.append({
+                "modifiers": mods,
+                "annotations": annotations,
+            })
+        is_entry = _is_class_entry_point(st, class_annotations, methods)
+        kind_input = {
+            "is_test": is_test,
+            "interfaces": st.get("interfaces") or [],
+            "annotations": class_annotations,
+            "is_entry_point": is_entry,
+        }
+        kinds = list_apex_class_kinds(kind_input, method_attr_snapshots)
+        class_attrs = {
+            "api_version": c.get("ApiVersion"),
+            "status": c.get("Status"),
+            "loc": c.get("LengthWithoutComments"),
+            # References from test code are Tier C, never Tier A. Without
+            # this discriminator every field a test touches looks USED.
+            "is_test": is_test,
+            "interfaces": st.get("interfaces") or [],
+            "parent_class": st.get("parentClass"),
+            "method_count": len(methods),
+            "annotations": class_annotations,
+            # Class-level @RestResource / entry methods / entry interfaces:
+            # callers may live outside the org, so zero internal refs must
+            # never yield UNUSED on the class alone.
+            "is_entry_point": is_entry,
+            "apex_kind": kinds[0],
+            "apex_kinds": kinds,
+        }
         cid = await _insert_component(
             s, run_id, "ApexClass", c["Name"], label=c["Name"], sf_id=c["Id"],
-            attrs={
-                "api_version": c.get("ApiVersion"),
-                "status": c.get("Status"),
-                "loc": c.get("LengthWithoutComments"),
-                # References from test code are Tier C, never Tier A. Without
-                # this discriminator every field a test touches looks USED.
-                "is_test": is_test,
-                "interfaces": st.get("interfaces") or [],
-                "parent_class": st.get("parentClass"),
-                "method_count": len(st.get("methods") or []),
-            },
+            attrs=class_attrs,
             created=c.get("CreatedDate"), modified=c.get("LastModifiedDate"),
         )
         await _insert_aliases(s, run_id, cid,
@@ -284,7 +496,7 @@ async def _inventory_apex(s, run_id: str, sf: SalesforceClient) -> dict[str, int
         # `references` array is always empty (verified across all 28 methods in
         # this org) because it is compilation-unit scoped, so it is never a call
         # graph - that comes from offline AST parsing later.
-        for mth in st.get("methods") or []:
+        for mth in methods:
             mname = mth.get("name")
             if not mname:
                 continue
@@ -345,25 +557,84 @@ _ENTRY_ANNOTATIONS = {
     # zero callers is their normal state rather than evidence of death.
     "istest", "testsetup",
 }
+#: Class-level annotations that expose the type itself (not a single method).
+_CLASS_ENTRY_ANNOTATIONS = {
+    "restresource",
+}
 _ENTRY_INTERFACES = {
     "database.batchable", "schedulable", "queueable",
     "messaging.inboundemailhandler", "callable", "comparable",
     "database.allowscallouts", "triggerhandler",
+    # Salesforce SymbolTable usually prefixes these (System.Schedulable, …).
+    "system.schedulable", "system.queueable", "system.callable",
+    "system.comparable",
 }
 _ENTRY_METHOD_NAMES = {"execute", "start", "finish", "handleinboundemail", "call"}
+
+
+def _iface_names(symbol_table: dict) -> set[str]:
+    """Normalized interface names, with and without namespace / generics."""
+    from app.pipeline.apex_kind import _norm_iface
+
+    out: set[str] = set()
+    for raw in symbol_table.get("interfaces") or []:
+        full = (raw or "").lower().split("<", 1)[0].strip()
+        if not full:
+            continue
+        out.add(full)
+        out.add(_norm_iface(full))
+    return out
+
+
+def _ifaces_match_entry(symbol_table: dict) -> bool:
+    ifaces = _iface_names(symbol_table)
+    if ifaces & _ENTRY_INTERFACES:
+        return True
+    shorts = {i.rsplit(".", 1)[-1] for i in _ENTRY_INTERFACES}
+    return bool(ifaces & shorts)
 
 
 def _is_entry_point(
     modifiers: list[str], annotations: list[str | None], symbol_table: dict, name: str
 ) -> bool:
+    """True when callers may live outside ordinary Apex call sites.
+
+    Bare ``global`` is visibility, not an external surface — treating it as an
+    entry point made every helper on a global class look like an API. Webservice
+    and the invocable annotations remain entry signals.
+    """
     mods = {m.lower() for m in modifiers}
-    if "global" in mods or "webservice" in mods:
+    if "webservice" in mods:
         return True
     if any((a or "").lower() in _ENTRY_ANNOTATIONS for a in annotations):
         return True
-    ifaces = {(i or "").lower() for i in (symbol_table.get("interfaces") or [])}
-    if ifaces & _ENTRY_INTERFACES and name.lower() in _ENTRY_METHOD_NAMES:
+    if _ifaces_match_entry(symbol_table) and name.lower() in _ENTRY_METHOD_NAMES:
         return True
+    return False
+
+
+def _is_class_entry_point(
+    symbol_table: dict,
+    class_annotations: list[str | None],
+    methods: list[dict],
+) -> bool:
+    """True when the class (or any of its methods) is externally invocable.
+
+    @RestResource lives on the class; HTTP verbs / AuraEnabled / etc. live on
+    methods. Either one means callers may sit outside the org.
+    """
+    if any((a or "").lower() in _CLASS_ENTRY_ANNOTATIONS for a in class_annotations):
+        return True
+    if _ifaces_match_entry(symbol_table):
+        return True
+    for mth in methods:
+        mname = mth.get("name")
+        if not mname:
+            continue
+        mods = mth.get("modifiers") or []
+        annotations = [a.get("name") for a in (mth.get("annotations") or [])]
+        if _is_entry_point(mods, annotations, symbol_table, mname):
+            return True
     return False
 
 

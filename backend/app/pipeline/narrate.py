@@ -3,19 +3,20 @@
 The boundary that matters, and the reason this is a separate stage rather than
 part of classification:
 
-    The verdict is decided by deterministic rules BEFORE this runs, and arrives
-    here as read-only context. The model explains; it does not judge.
+    The rule engine decides first. The model explains, and may only nudge a
+    verdict in carefully limited directions based on the same evidence the rules
+    already saw — never invent references, never invent UNUSED.
 
-A model asked "is this field used?" would answer confidently from incomplete
-evidence, and its confidence would be indistinguishable from the rule engine's.
-So it is never asked. It is given a decision and the evidence behind it, and
-asked to write down what the component appears to do and why the evidence
-supports the conclusion.
+Allowed moves (only when status=OK and JSON is parseable):
 
-The one direction it may move a verdict is toward caution: if it spots a reason
-the component might still matter, that becomes an uncertainty flag which
-downgrades UNUSED to NEEDS_REVIEW. It can never promote anything to USED, and it
-can never make a NEEDS_REVIEW into an UNUSED.
+  * UNUSED → NEEDS_REVIEW via ``LLM_FLAGGED_CONCERN`` when
+    ``still_might_matter`` is true (toward caution).
+  * NEEDS_REVIEW → USED via Tier-A evidence from ``S40_narration`` when
+    ``revise_to_used`` is true and the listed evidence already supports use
+    (toward "this really is used").
+
+It can never invent an UNUSED verdict, and it can never promote UNUSED straight
+to USED.
 """
 
 from __future__ import annotations
@@ -36,29 +37,34 @@ log = structlog.get_logger()
 SYSTEM = """You explain evidence about Salesforce metadata to an engineer who \
 must decide whether to delete something.
 
-A deterministic rule engine has ALREADY decided the verdict. It is given to you \
-as fact. Do not agree with it, disagree with it, or re-derive it. Do not \
-speculate about references beyond those listed. If the evidence is thin, say the \
-evidence is thin — do not fill the gap with plausible narrative.
+A deterministic rule engine has already produced a provisional verdict. You are \
+given that verdict and the evidence behind it.
 
-You are reading real production metadata. Be precise and unexcited. No praise, \
-no hedging filler, no restating the question.
+Rules you MUST follow:
+- Do not invent references, runtime activity, or dependencies that are not listed.
+- Never recommend UNUSED or deletion. You may only move toward caution, or \
+confirm clear use that the listed evidence already shows.
+- If the evidence is thin, say so — do not fill gaps with plausible narrative.
+- Be precise and unexcited. No praise, no hedging filler.
 
 Reply with ONLY a JSON object, no prose around it, no code fence:
 
 {
   "business_purpose": "<=45 words. What this component appears to do, in plain \
-language, inferred from its name, type and the code or definitions that touch \
-it. If you genuinely cannot tell, say so.",
+language, from its name, type and the listed code/refs. If you cannot tell, say so.",
   "evidence_summary": "<=90 words. Where we looked and what we found. Name the \
-places that returned nothing explicitly — that is the load-bearing part of the \
-verdict.",
-  "risk_note": "<=45 words. The strongest honest argument for KEEPING this, or \
-'none identified' if there is not one.",
+places that returned nothing explicitly.",
+  "risk_note": "<=45 words. Strongest honest argument for KEEPING this, or \
+'none identified'.",
   "still_might_matter": true|false,
-  "still_might_matter_why": "<=30 words, or empty string. Set the flag true ONLY \
-if you see a concrete reason this could still be load-bearing that the listed \
-evidence would not have caught."
+  "still_might_matter_why": "<=30 words, or empty. For UNUSED only: set true \
+ONLY if you see a concrete reason this could still be load-bearing that the \
+listed evidence would not have caught.",
+  "revise_to_used": true|false,
+  "revise_to_used_why": "<=40 words, or empty. For NEEDS_REVIEW only: set true \
+ONLY when the listed evidence already shows clear use (binding references, \
+reachability, runtime/data, dependency API). Cite those signals. Never invent \
+new ones."
 }"""
 
 # Credential-shaped strings are stripped before any source leaves the process.
@@ -75,12 +81,26 @@ def _redact(s: str) -> str:
 def _render_user_prompt(row: dict, evidence: list[dict], flags: list[dict],
                         refs: list[dict], source: str | None,
                         samples: list | None = None) -> str:
+    label = row["label"]
+    if label == "UNUSED":
+        verdict_line = (
+            f"VERDICT (provisional): {label}. You may ONLY raise "
+            "still_might_matter toward Needs review — never Used."
+        )
+    elif label == "NEEDS_REVIEW":
+        verdict_line = (
+            f"VERDICT (provisional): {label}. You may set revise_to_used=true "
+            "ONLY if listed evidence already proves use. Never Unused."
+        )
+    else:
+        verdict_line = f"VERDICT (provisional): {label}. Explain only; do not revise."
+
     parts = [
         f"COMPONENT: {row['api_name']}  ({row['ctype']})",
         f"OBJECT: {row.get('parent_object') or '(n/a)'}",
         f"LAST MODIFIED: {row.get('last_modified_date') or 'unknown'}",
         "",
-        f"VERDICT (already decided — do not revisit): {row['label']}",
+        verdict_line,
         f"CONFIDENCE: {round(row['confidence'])}",
         f"REASONS: {', '.join(row.get('reason_codes') or [])}",
         "",
@@ -88,8 +108,9 @@ def _render_user_prompt(row: dict, evidence: list[dict], flags: list[dict],
     ]
     for e in evidence:
         payload = json.dumps(e["payload"], default=str)[:400]
-        parts.append(f"  - {e['collector_id']}: {e['result']}"
-                     f"{f' (tier {e[chr(39)+chr(39)]})' if False else ''}")
+        tier = e.get("tier")
+        tier_bit = f" (tier {tier})" if tier else ""
+        parts.append(f"  - {e['collector_id']}: {e['result']}{tier_bit}")
         parts.append(f"      {payload}")
     if flags:
         parts.append("")
@@ -103,13 +124,12 @@ def _render_user_prompt(row: dict, evidence: list[dict], flags: list[dict],
             tag = " [test]" if r.get("is_test") else ""
             parts.append(f"  - {r['member_name']} ({r['metadata_type']}, "
                          f"tier {r['tier']}){tag}")
-    # Field metadata states what a name only implies. "Number(8,2), help text
-    # 'shipping weight'" turns an inference into a fact.
     attrs = row.get("attrs") or {}
     facts = [(k, attrs.get(k)) for k in
              ("data_type", "is_calculated", "business_status", "relationship_name",
               "modifiers", "annotations", "return_type", "on_object", "events",
-              "api_version", "loc", "is_test", "is_entry_point")
+              "api_version", "loc", "is_test", "is_entry_point",
+              "is_exposed", "targets", "access", "interfaces")
              if attrs.get(k) not in (None, "", [], False)]
     if facts:
         parts.append("")
@@ -118,8 +138,6 @@ def _render_user_prompt(row: dict, evidence: list[dict], flags: list[dict],
             parts.append(f"  {k}: {v}")
 
     if samples:
-        # Real values are decisive where a name is ambiguous: seeing
-        # 'GOLD','SILVER' identifies a loyalty tier faster than any inference.
         parts.append("")
         parts.append(f"SAMPLE VALUES ({len(samples)} distinct, from real records):")
         for v in samples[:5]:
@@ -133,17 +151,11 @@ def _render_user_prompt(row: dict, evidence: list[dict], flags: list[dict],
 
 
 async def _sample_values(sf, row: dict) -> list | None:
-    """A few real values for a populated field.
-
-    Only for fields that actually hold data — sampling an empty field costs a
-    call and returns nothing. Deliberately capped at 5 distinct values: the goal
-    is to identify what the field holds, not to export its contents.
-    """
+    """A few real values for a populated field."""
     if row.get("ctype") != "CustomField" or not row.get("parent_object"):
         return None
     field = row["api_name"].split(".", 1)[-1]
     dtype = str((row.get("attrs") or {}).get("data_type") or "").lower()
-    # Long text and encrypted values are unsafe or useless to sample.
     if any(x in dtype for x in ("textarea", "richtext", "encrypted", "base64")):
         return None
     try:
@@ -164,12 +176,7 @@ async def _sample_values(sf, row: dict) -> list | None:
 async def narrate_run(run_id: str, *, only_labels: tuple[str, ...] =
                       ("UNUSED", "NEEDS_REVIEW"), limit: int = 200,
                       sf=None) -> dict:
-    """Generate summaries for the components a human will actually look at.
-
-    USED components are skipped by default: nobody needs prose explaining why a
-    live field is live, and generating it would be most of the cost for none of
-    the value.
-    """
+    """Generate summaries for UNUSED and NEEDS_REVIEW; optionally revise."""
     s_cfg = get_settings()
     if not s_cfg.llm_enabled:
         log.info("narration_disabled")
@@ -179,7 +186,6 @@ async def narrate_run(run_id: str, *, only_labels: tuple[str, ...] =
     try:
         client._build()
     except LLMUnavailable as e:
-        # Not fatal. The analysis is complete and correct without prose.
         log.warning("narration_unavailable", detail=str(e)[:200])
         await _record(run_id, "UNAVAILABLE", str(e)[:300], 0)
         return {"status": "UNAVAILABLE", "generated": 0, "detail": str(e)[:300]}
@@ -201,14 +207,15 @@ async def narrate_run(run_id: str, *, only_labels: tuple[str, ...] =
         return {"status": "OK", "generated": 0}
 
     sem = asyncio.Semaphore(s_cfg.llm_max_concurrency)
-    generated = refused = failed = flagged = 0
+    generated = refused = failed = flagged = promoted = 0
 
     async def one(row: dict) -> None:
-        nonlocal generated, refused, failed, flagged
+        nonlocal generated, refused, failed, flagged, promoted
         async with sem:
             async with session_scope() as s:
                 ev = (await s.execute(text("""
-                    SELECT collector_id, result::text AS result, payload
+                    SELECT collector_id, result::text AS result, tier::text AS tier,
+                           payload
                       FROM evidence WHERE component_id = :c ORDER BY collector_id
                 """), {"c": row["id"]})).mappings().all()
                 fl = (await s.execute(text("""
@@ -222,8 +229,6 @@ async def narrate_run(run_id: str, *, only_labels: tuple[str, ...] =
                 src = await s.scalar(text("""
                     SELECT body FROM component_source WHERE component_id = :c
                 """), {"c": row["id"]})
-                # A method has no body of its own; its class does. Without this
-                # every ApexMethod summary would be written from the name alone.
                 if not src and row["ctype"] == "ApexMethod" and row.get("parent_object"):
                     src = await s.scalar(text("""
                         SELECT cs.body FROM component_source cs
@@ -246,9 +251,6 @@ async def narrate_run(run_id: str, *, only_labels: tuple[str, ...] =
                 status, refused = "REFUSED", refused + 1
             elif res.error or not res.parsed:
                 status, failed = "ERROR", failed + 1
-                # A transport error carries its own message, but an unparseable
-                # reply used to be stored with a blank error_text -- an ERROR row
-                # with no reason is undiagnosable. Say which of the two it was.
                 if not err_text:
                     err_text = ("response did not parse as JSON "
                                 f"({len(res.text or '')} chars returned)")
@@ -267,6 +269,7 @@ async def narrate_run(run_id: str, *, only_labels: tuple[str, ...] =
                             :it, :ot, :lat, :st, :err)
                     ON CONFLICT (run_id, component_id) DO UPDATE SET
                         business_purpose = EXCLUDED.business_purpose,
+                        unused_rationale = EXCLUDED.unused_rationale,
                         evidence_recap = EXCLUDED.evidence_recap,
                         risk_note = EXCLUDED.risk_note,
                         response = EXCLUDED.response, status = EXCLUDED.status,
@@ -276,38 +279,92 @@ async def narrate_run(run_id: str, *, only_labels: tuple[str, ...] =
                     "r": run_id, "c": row["id"], "prov": res.provider,
                     "m": res.model, "hash": res.prompt_sha256,
                     "bp": p.get("business_purpose"),
-                    "ur": p.get("still_might_matter_why") or None,
+                    "ur": (p.get("still_might_matter_why")
+                           or p.get("revise_to_used_why") or None),
                     "er": p.get("evidence_summary"),
                     "rn": p.get("risk_note"),
-                    # The exact prompt is stored so a reader can audit what the
-                    # model was told. Absence of that reads as evasion.
                     "req": json.dumps({"system": SYSTEM, "user": prompt}),
-                    "resp": json.dumps(p or {"raw": res.text[:2000]}),
+                    "resp": json.dumps(p or {"raw": (res.text or "")[:2000]}),
                     "it": res.input_tokens, "ot": res.output_tokens,
                     "lat": res.latency_ms, "st": status,
                     "err": err_text,
                 })
 
-                # The ONLY way narration touches a verdict: toward caution.
-                if status == "OK" and p.get("still_might_matter") is True \
-                        and row["label"] == "UNUSED":
+                if status != "OK":
+                    return
+
+                # UNUSED → NEEDS_REVIEW (caution only).
+                if p.get("still_might_matter") is True and row["label"] == "UNUSED":
                     why = str(p.get("still_might_matter_why") or "")[:400]
                     await s.execute(text("""
                         INSERT INTO uncertainty_flags (run_id, component_id, code,
-                                                       severity, detail)
-                        VALUES (:r, :c, 'LLM_FLAGGED_CONCERN', 'medium', :d)
-                        ON CONFLICT (component_id, code) DO NOTHING
+                                                       severity, detail, source_ref)
+                        VALUES (:r, :c, 'LLM_FLAGGED_CONCERN', 'medium', :d,
+                                CAST(:src AS jsonb))
+                        ON CONFLICT (component_id, code) DO UPDATE SET
+                            detail = EXCLUDED.detail,
+                            source_ref = EXCLUDED.source_ref
                     """), {"r": run_id, "c": row["id"],
-                           "d": f"AI-flagged, unverified: {why}"})
+                           "d": f"AI-flagged, unverified: {why}",
+                           "src": json.dumps({
+                               "decision": "NEEDS_REVIEW",
+                               "from": "UNUSED",
+                               "why": why,
+                               "model": res.model,
+                           })})
                     flagged += 1
+
+                # NEEDS_REVIEW → USED when listed evidence already supports use.
+                if p.get("revise_to_used") is True and row["label"] == "NEEDS_REVIEW":
+                    why = str(p.get("revise_to_used_why")
+                              or p.get("evidence_summary") or "")[:400]
+                    await s.execute(text("""
+                        INSERT INTO evidence (run_id, component_id, collector_id,
+                                              result, tier, weight, payload)
+                        VALUES (:r, :c, 'S40_narration',
+                                CAST('EVIDENCE_OF_USE' AS collector_result),
+                                CAST('A' AS evidence_tier), 0.85,
+                                CAST(:p AS jsonb))
+                        ON CONFLICT (component_id, collector_id) DO UPDATE SET
+                            result = EXCLUDED.result, tier = EXCLUDED.tier,
+                            weight = EXCLUDED.weight, payload = EXCLUDED.payload
+                    """), {"r": run_id, "c": row["id"],
+                           "p": json.dumps({
+                               "llm_revision": "USED",
+                               "from": "NEEDS_REVIEW",
+                               "why": why,
+                               "model": res.model,
+                               "provider": res.provider,
+                               "note": "AI confirmed use from already-listed "
+                                       "evidence; not a new reference invent.",
+                           })})
+                    await s.execute(text("""
+                        INSERT INTO uncertainty_flags (run_id, component_id, code,
+                                                       severity, detail, source_ref)
+                        VALUES (:r, :c, 'LLM_CONFIRMS_USE', 'low', :d,
+                                CAST(:src AS jsonb))
+                        ON CONFLICT (component_id, code) DO UPDATE SET
+                            detail = EXCLUDED.detail,
+                            source_ref = EXCLUDED.source_ref
+                    """), {"r": run_id, "c": row["id"],
+                           "d": f"AI confirmed use from listed evidence: {why}",
+                           "src": json.dumps({
+                               "decision": "USED",
+                               "from": "NEEDS_REVIEW",
+                               "why": why,
+                               "model": res.model,
+                           })})
+                    promoted += 1
 
     await asyncio.gather(*(one(dict(r)) for r in rows))
     await _record(run_id, "OK", None, generated)
 
     log.info("narration_complete", generated=generated, refused=refused,
-             failed=failed, flagged_for_review=flagged)
+             failed=failed, flagged_for_review=flagged,
+             promoted_to_used=promoted)
     return {"status": "OK", "generated": generated, "refused": refused,
             "failed": failed, "flagged_for_review": flagged,
+            "promoted_to_used": promoted,
             "candidates": len(rows), **client.describe}
 
 
@@ -323,6 +380,6 @@ async def _record(run_id: str, status: str, reason: str | None, hits: int) -> No
                 status = EXCLUDED.status, hits = EXCLUDED.hits,
                 unavailable_reason = EXCLUDED.unavailable_reason
         """), {"r": run_id, "st": status, "h": hits, "why": reason,
-               "m": "LLM narration of already-decided verdicts. The model never "
-                    "classifies; it may only raise a concern that downgrades "
-                    "UNUSED to NEEDS_REVIEW."})
+               "m": "LLM narration of provisional verdicts. May flag UNUSED toward "
+                    "NEEDS_REVIEW, or confirm NEEDS_REVIEW → USED from listed "
+                    "evidence. Never invents UNUSED."})

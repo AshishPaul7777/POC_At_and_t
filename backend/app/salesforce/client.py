@@ -297,6 +297,57 @@ class SalesforceClient:
                         error=str(e)[:160])
             return None
 
+    async def get_text(
+        self,
+        path: str,
+        *,
+        call_class: CallClass = CallClass.SHORT,
+        cost: int = 1,
+        attempt: int = 0,
+        accept: str = "text/csv, text/plain, */*",
+    ) -> str:
+        """GET a non-JSON body (EventLogFile CSV, raw metadata blobs, etc.)."""
+        assert self._http is not None, "use `async with SalesforceClient() as sf:`"
+        token = await self._tokens.token()
+        url = path if path.startswith("http") else f"{token.instance_url}{path}"
+
+        async with self.governor.lease(call_class, cost) as lease:
+            resp = await self._http.request(
+                "GET", url,
+                headers={
+                    "Authorization": f"Bearer {token.value}",
+                    "Accept": accept,
+                },
+            )
+            lease.observe(resp.headers.get("Sforce-Limit-Info"))
+
+        if resp.status_code < 300:
+            return resp.text
+
+        code, message = _parse_error(resp)
+        if resp.status_code == 401 and attempt == 0:
+            log.info("sf_session_expired_refreshing")
+            await self._tokens.token(force_refresh=True)
+            return await self.get_text(
+                path, call_class=call_class, cost=cost, attempt=1, accept=accept)
+
+        if resp.status_code in _RETRYABLE_STATUS and attempt < 4:
+            delay = min(30.0, 2 ** attempt) * (0.5 + 0.5 * attempt)
+            log.warning("sf_retrying", status=resp.status_code, attempt=attempt, delay_s=delay)
+            await asyncio.sleep(delay)
+            return await self.get_text(
+                path, call_class=call_class, cost=cost, attempt=attempt + 1, accept=accept)
+
+        raise SalesforceError(message, error_code=code, status=resp.status_code)
+
+    async def get_event_log_file(self, event_log_file_id: str) -> str:
+        """Download the CSV body for one ``EventLogFile`` row."""
+        path = (
+            f"/services/data/v{self._s.sf_api_version}/sobjects/"
+            f"EventLogFile/{event_log_file_id}/LogFile"
+        )
+        return await self.get_text(path, call_class=CallClass.LONG, cost=2)
+
     async def limits(self) -> dict:
         data = await self._request("GET", f"/services/data/v{self._s.sf_api_version}/limits")
         return data or {}

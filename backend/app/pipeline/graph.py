@@ -24,15 +24,18 @@ Things that execute or are seen WITHOUT being called by something else:
 
     triggers, active Flows, workflow rules, validation rules, scheduled jobs,
     reports, dashboards, list views, quick actions, email templates,
-    LWC / Aura / Visualforce, and Apex exposed via @AuraEnabled, @InvocableMethod,
-    @RestResource, global, webservice, Schedulable, Batchable, Queueable.
+    Visualforce pages, exposed LWC/Aura (isExposed / global access), and Apex
+    exposed via @AuraEnabled, @InvocableMethod, @RestResource, webservice,
+    Schedulable, Batchable, Queueable.
 
-NOT entry points - placement, not execution:
+NOT entry points - placement, not execution (for fields); UI placement is
+handled as Tier-A C10 evidence instead of graph roots:
 
-    page layouts, FlexiPages, compact layouts   (presentation)
+    page layouts, FlexiPages, compact layouts   (presentation for fields)
     profiles, permission sets                   (who could see it)
     an object's own definition file             (declaration)
-    tabs, applications                          (navigation)
+    tabs, applications                          (navigation for fields)
+    private LWC/Aura bundles                    (need a placer or importer)
 
 That list is the same distinction the classifier uses, applied structurally
 instead of per-component.
@@ -51,22 +54,28 @@ from app.db.session import session_scope
 log = structlog.get_logger()
 
 #: Artifact types that run or are seen on their own initiative.
+#:
+#: LWC / Aura bundles are NOT blanket roots. An exposed bundle is a component-
+#: level entry (admin/Experience can still wire it). Placement on a FlexiPage
+#: / tab / app is Tier-A via C10, not by treating every retrieved bundle as live.
 ENTRY_POINT_TYPES: frozenset[str] = frozenset({
     "ApexTrigger", "Flow", "FlowDefinition", "Workflow", "ValidationRule",
     "ApprovalProcess", "AssignmentRules", "EscalationRules", "AutoResponseRules",
     "DuplicateRule", "MatchingRule",
     "Report", "Dashboard", "ReportType", "AnalyticSnapshot",
     "EmailTemplate", "QuickAction", "WebLink", "PathAssistant",
-    "LightningComponentBundle", "AuraDefinitionBundle", "ApexPage",
-    "ApexComponent", "CustomNotificationType", "PlatformEventChannelMember",
+    "ApexPage", "ApexComponent", "CustomNotificationType",
+    "PlatformEventChannelMember",
 })
 
-#: Types that place or permit a component without exercising it. Reaching a
-#: component only through one of these does NOT make it used.
+#: Types that place or permit a component without exercising it — for *fields*.
+#: For LWC/Aura, FlexiPage / Tab / App placement is deliberate use (C10 Tier A);
+#: those artifacts still are not graph roots for field reachability.
 NON_ENTRY_TYPES: frozenset[str] = frozenset({
     "Layout", "FlexiPage", "CompactLayout", "Profile", "PermissionSet",
     "PermissionSetGroup", "CustomApplication", "CustomTab", "SharingRules",
     "CustomObject", "package.xml", "GlobalValueSet", "StandardValueSet",
+    "LightningComponentBundle", "AuraDefinitionBundle",
 })
 
 
@@ -125,7 +134,8 @@ async def build_graph(run_id: str) -> Graph:
 
     async with session_scope() as s:
         comps = (await s.execute(text("""
-            SELECT id, ctype::text AS ctype, api_name, in_scope, attrs, parent_object
+            SELECT id, ctype::text AS ctype, api_name, in_scope, attrs,
+                   parent_object, parent_id
               FROM components WHERE run_id = :r
         """), {"r": run_id})).mappings().all()
 
@@ -150,6 +160,11 @@ async def build_graph(run_id: str) -> Graph:
         # zero internal callers can never make it unreachable.
         if c["ctype"] == "ApexMethod" and attrs.get("is_entry_point"):
             entry, reason = True, "externally invocable Apex method"
+        elif c["ctype"] == "ApexClass" and attrs.get("is_entry_point"):
+            entry, reason = True, "externally invocable Apex class"
+        elif c["ctype"] in ("LightningComponentBundle", "AuraDefinitionBundle") \
+                and (attrs.get("is_exposed") or attrs.get("is_entry_point")):
+            entry, reason = True, "exposed UI bundle (admin/Experience can wire it)"
         g.nodes[f"component:{c['id']}"] = Node(
             key=f"component:{c['id']}", kind="component", label=c["api_name"],
             ctype=c["ctype"], component_id=c["id"], in_scope=c["in_scope"],
@@ -170,8 +185,6 @@ async def build_graph(run_id: str) -> Graph:
                 "Report": "a person runs or views this report",
                 "Dashboard": "a person views this dashboard",
                 "EmailTemplate": "sent to a recipient",
-                "LightningComponentBundle": "rendered in the UI",
-                "AuraDefinitionBundle": "rendered in the UI",
                 "ApexPage": "rendered in the UI",
                 "QuickAction": "invoked by a user",
             }.get(mt, f"{mt} executes or is user-facing")
@@ -205,19 +218,27 @@ async def build_graph(run_id: str) -> Graph:
     for a in arts:
         by_member[(a["metadata_type"], a["member_name"].lower())] = a["id"]
     for c in comps:
-        if c["ctype"] in ("ApexClass", "ApexTrigger"):
+        if c["ctype"] in ("ApexClass", "ApexTrigger",
+                          "LightningComponentBundle", "AuraDefinitionBundle"):
             aid = by_member.get((c["ctype"], c["api_name"].lower()))
             if aid:
                 g.add_edge(f"component:{c['id']}", f"artifact:{aid}",
                            kind="implements")
         elif c["ctype"] == "ApexMethod":
-            # A method belongs to its class: reaching the class reaches its
-            # methods, and an entry-point method makes its class reachable.
+            # Ownership edges (structural, not proof of use):
+            # - artifact(class) -> method: the class file declares the method
+            # - method -> class component: a method reached from elsewhere keeps
+            #   its parent class alive (BFS skips member_of at distance 0 so an
+            #   uncalled entry method does not fake Tier-A on the class)
             cls = (c["parent_object"] or "").lower()
             aid = by_member.get(("ApexClass", cls))
             if aid:
                 g.add_edge(f"artifact:{aid}", f"component:{c['id']}",
                            kind="declares")
+            parent_id = c.get("parent_id")
+            if parent_id and f"component:{parent_id}" in g.nodes:
+                g.add_edge(f"component:{c['id']}", f"component:{parent_id}",
+                           kind="member_of")
 
     log.info("graph_built", nodes=len(g.nodes),
              edges=sum(len(v) for v in g.out.values()),
@@ -237,6 +258,18 @@ def compute_reachability(g: Graph) -> dict[str, int]:
         cur = q.popleft()
         d = g.nodes[cur].distance or 0
         for nxt in g.out.get(cur, ()):
+            meta = g.edge_meta.get((cur, nxt), {})
+            kind = meta.get("kind")
+            # `declares` is ownership inside a class file, not a use of the method.
+            # Traversing it would mark every method USED whenever the class is
+            # reachable (or is itself an API entry root).
+            if kind == "declares":
+                continue
+            # `member_of` promotes the parent class only when the method was
+            # reached from somewhere else (d > 0). A distance-0 entry method
+            # must not invent Tier-A evidence for its class.
+            if kind == "member_of" and d == 0:
+                continue
             node = g.nodes.get(nxt)
             if node and not node.reachable:
                 node.reachable, node.distance, node.via = True, d + 1, cur
@@ -261,7 +294,29 @@ async def persist_reachability(run_id: str, g: Graph) -> None:
     for n in g.nodes.values():
         if n.kind != "component" or not n.in_scope:
             continue
-        if n.reachable:
+        # Being a graph root only means "callers may live outside the org".
+        # It is not itself Tier-A proof of use — that would make every
+        # @HttpGet / @RestResource surface USED with zero observed traffic.
+        if n.is_entry_point and (n.distance or 0) == 0:
+            note = (
+                "externally invocable Apex root; zero observed "
+                "internal callers is normal, not proof of use"
+                if n.ctype.startswith("Apex") else
+                "exposed UI bundle with no inbound graph path; admin or "
+                "Experience Builder can still place it — not proof of use"
+            )
+            evidence.append({
+                "component_id": n.component_id,
+                "result": "NO_EVIDENCE_FOUND", "tier": None, "weight": 0.0,
+                "payload": {
+                    "reachable": True,
+                    "self_entry_point": True,
+                    "hops_from_entry_point": 0,
+                    "entry_reason": n.entry_reason,
+                    "note": note,
+                },
+            })
+        elif n.reachable:
             path = g.path_to_root(n.key)
             root = path[-1] if path else None
             evidence.append({

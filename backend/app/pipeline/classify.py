@@ -4,16 +4,23 @@ No LLM, no weighted sum, no machine learning. The verdict is decided by rules
 evaluated in order, first match wins, and the trace of which rule fired is stored
 so any verdict can be explained exactly.
 
-    R0  managed package / namespaced           -> OUT_OF_SCOPE
-    R1  standard object or standard field      -> OUT_OF_SCOPE
-    R2  completeness gate failed               -> NEEDS_REVIEW
-    R3  any Tier-A evidence of use             -> USED
-    R4  no Tier A but Tier B (runtime/data)    -> USED
-    R5  Apex entry point, no observed caller   -> NEEDS_REVIEW
-    R6  any Tier-D uncertainty flag            -> NEEDS_REVIEW
-    R7  weak/inconclusive evidence only        -> NEEDS_REVIEW
-    R8  referenced by something not-UNUSED     -> NEEDS_REVIEW
-    R9  nothing anywhere, coverage complete    -> UNUSED
+    R0   managed package / namespaced            -> OUT_OF_SCOPE
+    R1   standard object or standard field       -> OUT_OF_SCOPE
+    R2   completeness gate failed                -> NEEDS_REVIEW
+    R3a  layout-only Tier-A + no data            -> UNUSED (or R6 if flagged)
+    R3   any other Tier-A evidence of use        -> USED
+    R4   no Tier A but Tier B (runtime/data)     -> USED
+    R5   Apex entry point / exposed UI / test, no caller -> NEEDS_REVIEW
+    R6   Tier-D review flag (not RECENTLY_CHANGED) -> NEEDS_REVIEW
+    R5b  Apex/private UI unreachable from any entry -> UNUSED
+    R7a  presence-only weak refs (FLS/layout/…) + no data -> UNUSED
+    R7   other weak/inconclusive evidence only   -> NEEDS_REVIEW
+    R9   nothing anywhere, coverage complete     -> UNUSED
+
+Post-passes (after every component has a provisional verdict):
+    R_PARENT  USED method forces parent class USED
+    R8 / R8c  referenced by a live component -> NEEDS_REVIEW;
+              closed unused cluster stays UNUSED with a delete-together prereq
 
 Confidence is a 0-100 number for SORTING THE REVIEW QUEUE. It never decides a
 verdict. Ranking a queue wrongly wastes someone's morning; deciding a verdict
@@ -27,7 +34,6 @@ from dataclasses import dataclass, field
 import structlog
 from sqlalchemy import text
 
-from app.config import get_settings
 from app.db.session import session_scope
 
 log = structlog.get_logger()
@@ -35,15 +41,45 @@ log = structlog.get_logger()
 #: Collectors that must have completed for an UNUSED verdict to be permitted.
 #: A missing or failed one fails the completeness gate (R2) — absence of
 #: evidence is never evidence of absence.
+#:
+#: C70 is required for Apex: without a reachability result, R5b cannot prove
+#: "nothing can reach this", and R9 must not fire on that absence.
 REQUIRED_COLLECTORS = {
     "CustomField": {"C10_static_index", "C20_data_population"},
     "CustomObject": {"C10_static_index", "C20_data_population"},
-    "ApexClass": {"C10_static_index", "C40_runtime"},
-    "ApexTrigger": {"C10_static_index", "C40_runtime"},
+    "ApexClass": {"C10_static_index", "C40_runtime", "C70_reachability"},
+    "ApexTrigger": {"C10_static_index", "C40_runtime", "C70_reachability"},
     # C90 is deliberately absent for methods: they are not deployable on their
     # own, so a delete rehearsal cannot apply and must not be required.
-    "ApexMethod": {"C10_static_index"},
+    "ApexMethod": {"C10_static_index", "C70_reachability"},
+    # UI: placement/imports are C10; C70 proves private bundles are unreachable.
+    # C40 Event Monitoring (LightningInteraction) is optional Tier B, not required.
+    "LightningComponentBundle": {"C10_static_index", "C70_reachability"},
+    "AuraDefinitionBundle": {"C10_static_index", "C70_reachability"},
 }
+
+
+#: Uncertainty flag codes that are informational only — visible in the UI and
+#: check-flow, but must not fire R6 / suppress UNUSED.
+INFORMATIONAL_FLAG_CODES = frozenset({
+    "RECENTLY_CHANGED",
+    # AI confirmed use from listed evidence — display only; Tier-A S40 evidence
+    # is what moves the verdict to USED.
+    "LLM_CONFIRMS_USE",
+})
+
+
+def _review_flags(flags: list) -> list:
+    """Flags that suppress UNUSED. Recent-change flags are display-only."""
+    out = []
+    for f in flags:
+        code = getattr(f, "code", None)
+        if code is None and isinstance(f, dict):
+            code = f.get("code")
+        if not code or code in INFORMATIONAL_FLAG_CODES:
+            continue
+        out.append(f)
+    return out
 
 
 def attrs_entry_point(comp: dict) -> bool:
@@ -53,6 +89,37 @@ def attrs_entry_point(comp: dict) -> bool:
     never make it dead — the check has to happen before any unreachable rule.
     """
     return bool((comp.get("attrs") or {}).get("is_entry_point"))
+
+
+def _is_layout_only_evidence(e: dict) -> bool:
+    """True when this Tier-A hit is only a layout/FlexiPage placement from C10."""
+    return (
+        e.get("collector_id") == "C10_static_index"
+        and bool((e.get("payload") or {}).get("layout_only"))
+    )
+
+
+#: Consumer types that only prove *presence* (FLS, nav, layout), not business use.
+PRESENCE_ONLY_SOURCE_TYPES = frozenset({
+    "Profile", "PermissionSet", "PermissionSetGroup",
+    "CustomApplication", "CustomTab", "SharingRules",
+    "Layout", "FlexiPage", "CompactLayout",
+})
+
+
+def _weak_source_types(weak_rows: list[dict]) -> list[str]:
+    out: set[str] = set()
+    for e in weak_rows:
+        for s in (e.get("payload") or {}).get("weak_source_types") or []:
+            if s:
+                out.add(str(s))
+    return sorted(out)
+
+
+def _is_presence_only_weak(sources: list[str]) -> bool:
+    if not sources:
+        return True
+    return all(s in PRESENCE_ONLY_SOURCE_TYPES for s in sources)
 
 
 @dataclass
@@ -74,7 +141,7 @@ async def classify_run(run_id: str) -> dict[str, int]:
     async with session_scope() as s:
         comps = (await s.execute(text("""
             SELECT c.id, c.ctype::text AS ctype, c.api_name, c.namespace,
-                   c.in_scope, c.out_of_scope_reason, c.attrs
+                   c.in_scope, c.out_of_scope_reason, c.attrs, c.parent_id
               FROM components c WHERE c.run_id = :r
         """), {"r": run_id})).mappings().all()
 
@@ -108,14 +175,22 @@ async def classify_run(run_id: str) -> dict[str, int]:
     for f in flag_rows:
         flags.setdefault(f.component_id, []).append(f)
 
+    comps_list = [dict(c) for c in comps]
     verdicts = [
-        _decide(dict(c), evidence.get(c["id"], []), gaps.get(c["id"], []),
+        _decide(c, evidence.get(c["id"], []), gaps.get(c["id"], []),
                 flags.get(c["id"], []), ran)
-        for c in comps
+        for c in comps_list
     ]
+
+    # A USED method means its parent ApexClass is in use — you cannot delete the
+    # class while keeping a live method. The reverse is not true: unused
+    # methods may sit inside a used class.
+    verdicts = _promote_classes_with_used_methods(comps_list, verdicts)
 
     # R8 needs every other verdict first: a component referenced by anything that
     # is not itself UNUSED cannot be deleted yet. Delete clusters, never leaves.
+    # Uses in-memory labels — never the classifications table — so a first
+    # classify pass sees USED referrers before anything is persisted.
     verdicts = await _apply_transitive_guard(run_id, verdicts)
 
     await _persist(run_id, verdicts)
@@ -206,10 +281,9 @@ def _decide(comp: dict, ev: list[dict], gaps: list, flags: list,
     # field that ONLY layouts reference, holding no data in any record, is
     # unused in the only sense anyone cares about.
     #
-    # Calling it NEEDS_REVIEW (the earlier behaviour) buried the finding and made
-    # a reader re-derive the same reasoning for every field. Calling it UNUSED
-    # with an explicit prerequisite states both facts plainly: nothing uses it,
-    # and it must come off these layouts before it can go.
+    # Only fires when EVERY Tier-A hit is layout-only C10. A Dependency API or
+    # config-data Tier-A hit must fall through to R3 USED instead.
+    # Completeness must PASS: gaps must not be papered over by layout placement.
     static = next((e for e in ev if e["collector_id"] == "C10_static_index"), None)
     payload = (static or {}).get("payload", {}) or {}
     layout_only = bool(payload.get("layout_only"))
@@ -218,17 +292,12 @@ def _decide(comp: dict, ev: list[dict], gaps: list, flags: list,
         and e["result"] == "NO_EVIDENCE_FOUND"
         for e in ev
     )
-    if tier_a and layout_only and zero_data:
+    only_layout_tier_a = bool(tier_a) and all(_is_layout_only_evidence(e) for e in tier_a)
+    if only_layout_tier_a and zero_data and completeness["gate"] == "PASS":
         names = list(payload.get("layout_names") or [])
-        # NOT blocking, and this was corrected by the delete rehearsal rather
-        # than reasoned out. An earlier version asserted that layout presence
-        # would fail a destructive deploy; Salesforce accepted all six such
-        # fields with zero component failures, because it strips a deleted field
-        # from its layouts automatically.
-        #
-        # The step is kept because doing it first is still the safer order — it
-        # makes the change visible to admins before the field disappears — but
-        # calling it blocking would have been a confident, wrong claim.
+        # NOT blocking — Salesforce strips deleted fields from layouts
+        # automatically (confirmed by validate-only rehearsal). Doing it first
+        # is still safer: the layout change is visible and reversible alone.
         prereqs.append({
             "step": "Remove the field from its page layouts",
             "reason": "Salesforce strips a deleted field from layouts "
@@ -257,6 +326,13 @@ def _decide(comp: dict, ev: list[dict], gaps: list, flags: list,
             "targets": [],
             "blocking": False,
         })
+        if flags:
+            # Flags suppress UNUSED (R6). Layout-only must not bypass that.
+            # RECENTLY_CHANGED is informational only and does not suppress.
+            review = _review_flags(flags)
+            if review:
+                codes = ", ".join(sorted({f.code for f in review}))
+                return fire("R6", "NEEDS_REVIEW", codes, min(conf, 60))
         return fire("R3a", "UNUSED",
                     f"LAYOUT_ONLY_NO_DATA (no functional reference, no data; "
                     f"remove from {len(names)} layout(s) first)",
@@ -281,11 +357,17 @@ def _decide(comp: dict, ev: list[dict], gaps: list, flags: list,
     if tier_b:
         return fire("R4", "USED", "RUNTIME_OR_DATA_EVIDENCE", max(min(conf, 75), 60))
 
-    # R5 — externally invocable Apex. Its caller lives outside the org, so zero
-    # observed callers can never make it unused.
+    # R5 — externally invocable Apex, or an exposed UI bundle with no placement.
+    # Callers / Experience wiring may live outside retrieved metadata.
     attrs = comp.get("attrs") or {}
-    if ctype == "ApexMethod" and attrs.get("is_entry_point"):
+    if ctype in ("ApexMethod", "ApexClass") and attrs.get("is_entry_point"):
         return fire("R5", "NEEDS_REVIEW", "UNCALLED_ENTRY_POINT", min(conf, 60))
+    if ctype in ("LightningComponentBundle", "AuraDefinitionBundle") and (
+            attrs.get("is_exposed") or attrs.get("is_entry_point")):
+        return fire("R5", "NEEDS_REVIEW",
+                    "EXPOSED_UI_NO_PLACEMENT (isExposed/global surface with no "
+                    "observed FlexiPage, tab, app, or import reference)",
+                    min(conf, 60))
     # A test class is never UNUSED on its own: it must be deleted together with
     # whatever it tests, and deleting it alone silently drops coverage.
     if attrs.get("is_test"):
@@ -293,50 +375,65 @@ def _decide(comp: dict, ev: list[dict], gaps: list, flags: list,
                     "TEST_ONLY (delete with the code it covers, never alone)",
                     min(conf, 60))
 
-    # R5b — code nothing can reach.
+    # R6 — Tier-D review flags suppress UNUSED.
     #
-    # Placed AFTER the entry-point and test-class checks, deliberately. An
-    # earlier version ran it first and marked a test class plus its @TestSetup
-    # method UNUSED with no prerequisites — which would invite someone to delete
-    # a test and silently lose the coverage it provides.
+    # Must run BEFORE R5b / R9. RECENTLY_CHANGED is excluded: it stays visible
+    # as a flag on the check-flow but must not force Needs review by itself.
+    review = _review_flags(flags)
+    if review:
+        codes = ", ".join(sorted({
+            (getattr(f, "code", None)
+             or (f.get("code") if isinstance(f, dict) else None)
+             or "")
+            for f in review
+        } - {""}))
+        return fire("R6", "NEEDS_REVIEW", codes, min(conf, 60))
+
+    # R5b — code / private UI nothing can reach.
     #
+    # Placed AFTER the entry-point, test-class, and flag checks, deliberately.
     # Apex is the clean case for this rule: unlike a field, a class has no
     # presentation layer to be merely "placed" on. If nothing that runs can
     # reach it and it exposes no entry point of its own, nothing can execute it.
-    if unreachable and ctype in ("ApexClass", "ApexTrigger", "ApexMethod") \
+    # Private (non-exposed) LWC/Aura with no imports follow the same logic.
+    if unreachable and ctype in (
+            "ApexClass", "ApexTrigger", "ApexMethod",
+            "LightningComponentBundle", "AuraDefinitionBundle") \
             and not attrs_entry_point(comp) and not tier_b:
         return fire("R5b", "UNUSED",
                     "UNREACHABLE (no trigger, flow, UI component or external "
                     "entry point can reach this, and it exposes none itself)",
                     max(min(conf, 85), 70))
 
-    # R6 — any uncertainty flag suppresses UNUSED outright.
-    if flags:
-        codes = ", ".join(sorted({f.code for f in flags}))
-        return fire("R6", "NEEDS_REVIEW", codes, min(conf, 60))
-
-    # R7 — genuinely weak evidence: something references it, but only in a way
-    # that cannot prove use.
+    # R7a / R7 — weak evidence only (permission sets, FLS, inactive leftovers).
     #
-    # The distinction that matters here, and which an earlier version got wrong:
-    # a collector reporting INCONCLUSIVE is NOT the same as weak evidence. The
-    # Dependency API returns INCONCLUSIVE for every component it has no edge
-    # for — deliberately, because its coverage is partial and absence there
-    # proves nothing. Treating that as "weak signal suggesting use" made R7 fire
-    # for practically everything, which blocked R9 and buried real findings in
-    # the review queue.
-    #
-    # So only count inconclusive results that carry an actual positive trace.
+    # Presence on a profile or permission set is created with every field; it
+    # does not prove business use. Same for layout-adjacent weak signals when
+    # they never rose to Tier A. With no data and a clean gate → Unused (R7a).
+    # Other weak sources (ambiguous) still need a person (R7).
     weak = [
         e for e in by_result.get("INCONCLUSIVE", [])
         if (e["payload"] or {}).get("weak_references")
     ]
-    if weak:
-        sources = sorted({
-            s for e in weak
-            for s in (e["payload"] or {}).get("weak_source_types", [])
-        })
+    if weak and not used:
+        sources = _weak_source_types(weak)
         detail = f" ({', '.join(sources[:3])} only)" if sources else ""
+        needs_data = ctype in ("CustomField", "CustomObject")
+        data_ok = (not needs_data) or zero_data
+        if (
+            _is_presence_only_weak(sources)
+            and data_ok
+            and completeness["gate"] == "PASS"
+        ):
+            review = _review_flags(flags)
+            if review:
+                codes = ", ".join(sorted({f.code for f in review}))
+                return fire("R6", "NEEDS_REVIEW", codes, min(conf, 60))
+            return fire(
+                "R7a", "UNUSED",
+                f"PRESENCE_ONLY_NO_DATA{detail}",
+                min(conf, 70),
+            )
         return fire("R7", "NEEDS_REVIEW", f"WEAK_SIGNAL_ONLY{detail}", min(conf, 65))
 
     # R9 — every required collector ran cleanly and none found anything.
@@ -346,31 +443,71 @@ def _decide(comp: dict, ev: list[dict], gaps: list, flags: list,
     return fire("R2", "NEEDS_REVIEW", "INSUFFICIENT_EVIDENCE", min(conf, 55))
 
 
+def _promote_classes_with_used_methods(
+    comps: list[dict], verdicts: list[Verdict]
+) -> list[Verdict]:
+    """If any ApexMethod is USED, its parent ApexClass must also be USED."""
+    by_id = {v.component_id: v for v in verdicts}
+    parent_of = {
+        c["id"]: c.get("parent_id")
+        for c in comps
+        if c.get("ctype") == "ApexMethod" and c.get("parent_id")
+    }
+    promoted = 0
+    for method_id, parent_id in parent_of.items():
+        mv = by_id.get(method_id)
+        pv = by_id.get(parent_id)
+        if not mv or not pv or mv.label != "USED":
+            continue
+        if pv.label == "USED":
+            continue
+        pv.label = "USED"
+        pv.reason_codes = ["HAS_USED_METHOD"]
+        pv.confidence = max(pv.confidence, 80.0)
+        pv.rule_trace.append({
+            "rule": "R_PARENT",
+            "fired": True,
+            "why": "parent class of a USED method cannot be unused or review-only",
+        })
+        promoted += 1
+    if promoted:
+        log.info("promoted_classes_with_used_methods", count=promoted)
+    return verdicts
+
+
 async def _apply_transitive_guard(run_id: str, verdicts: list[Verdict]) -> list[Verdict]:
     """Nothing is UNUSED while a live component still references it.
 
     A field may itself be unreferenced while a formula field that IS used points
     at it. Deleting the leaf breaks the live consumer, so the cluster has to go
     together or not at all.
+
+    Referrer liveness is read from the in-memory ``verdicts`` list — never from
+    the classifications table — because this runs before ``_persist``. Joining
+    classifications on a first pass left ``alive_refs`` empty and wrongly kept
+    live-referenced leaves as UNUSED (R8c).
     """
     by_id = {v.component_id: v for v in verdicts}
+    label_by_id = {v.component_id: v.label for v in verdicts}
     unused = {v.component_id for v in verdicts if v.label == "UNUSED"}
     if not unused:
         return verdicts
 
     async with session_scope() as s:
         rows = (await s.execute(text("""
-            SELECT DISTINCT e.to_component_id AS target, a.member_name AS src,
-                            a.metadata_type AS src_type
+            SELECT DISTINCT e.to_component_id AS target,
+                            a.member_name AS src,
+                            a.metadata_type AS src_type,
+                            src.id AS src_id
               FROM reference_edges e
               JOIN artifact a ON a.id = e.from_artifact_id
+              JOIN components src ON src.run_id = e.run_id
+                                 AND lower(src.api_name) = lower(a.member_name)
              WHERE e.run_id = :r AND e.to_component_id = ANY(:ids)
                AND e.tier = 'A'
                -- Presentation metadata is excluded here on purpose. A layout
                -- referencing a field is a REMOVAL PREREQUISITE, already recorded
                -- as such, not a live consumer that keeps the field alive.
-               -- Without this exclusion the guard would immediately undo every
-               -- layout-only UNUSED verdict and the tool would find nothing.
                AND a.metadata_type NOT IN ('Layout','FlexiPage','CompactLayout')
                -- A component's own object file declares it; that is definition,
                -- not use.
@@ -384,49 +521,32 @@ async def _apply_transitive_guard(run_id: str, verdicts: list[Verdict]) -> list[
     # CLOSED CLUSTER DETECTION.
     #
     # A set of components that reference only each other, with nothing live
-    # reaching any of them, is not "blocked" in any meaningful sense — it is one
-    # orphaned unit. Treating each member as an independent blocked item turned
-    # a single decision ("delete this dead service layer, or keep it") into 18
-    # separate review items on a real run, which is how a review queue becomes
-    # unusable.
-    #
-    # The distinction that matters: is the referencing component ITSELF unused?
-    # If yes, the reference proves nothing — they are dead together.
-    async with session_scope() as s:
-        alive_refs = {
-            r.target for r in (await s.execute(text("""
-                SELECT DISTINCT e.to_component_id AS target
-                  FROM reference_edges e
-                  JOIN artifact a ON a.id = e.from_artifact_id
-                  JOIN components src ON src.run_id = e.run_id
-                                     AND lower(src.api_name) = lower(a.member_name)
-                  JOIN classifications scl ON scl.component_id = src.id
-                 WHERE e.run_id = :r AND e.to_component_id = ANY(:ids)
-                   AND e.tier = 'A'
-                   AND a.metadata_type NOT IN ('Layout','FlexiPage','CompactLayout')
-                   -- Only a referrer that is NOT itself unused keeps something
-                   -- alive. A dead class pointing at a dead field proves nothing.
-                   AND scl.label <> 'UNUSED'
-            """), {"r": run_id, "ids": list(unused)})).all()
-        }
-
+    # reaching any of them, is one orphaned unit — keep UNUSED with a
+    # delete-together prerequisite rather than N separate review items.
     blocked = clustered = 0
+    seen_targets: set[int] = set()
     for r in rows:
+        if r.target in seen_targets:
+            continue
         v = by_id.get(r.target)
         if not v or v.label != "UNUSED":
             continue
-        if r.target in alive_refs:
+        seen_targets.add(r.target)
+        src_rows = [x for x in rows if x.target == r.target]
+        live = [
+            x for x in src_rows
+            if label_by_id.get(x.src_id) not in (None, "UNUSED")
+        ]
+        if live:
+            src = live[0]
             v.label = "NEEDS_REVIEW"
             v.reason_codes = ["BLOCKED_BY_DEPENDENT"]
             v.rule_trace.append({
                 "rule": "R8", "fired": True,
-                "why": f"still referenced by {r.src}, which is not itself unused"})
+                "why": f"still referenced by {src.src}, which is not itself unused"})
             v.confidence = min(v.confidence, 60)
             blocked += 1
         else:
-            # Everything pointing at it is also unused: keep the UNUSED verdict
-            # and mark it as part of a cluster so the report can present the
-            # group as one decision rather than N.
             v.reason_codes = [*v.reason_codes, "PART_OF_ORPHANED_CLUSTER"]
             v.removal_prerequisites.append({
                 "step": "Delete the whole cluster together",

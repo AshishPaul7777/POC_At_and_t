@@ -34,7 +34,9 @@ CREATE TYPE task_state AS ENUM (
   'PENDING','RESERVED','RUNNING','SUCCEEDED','FAILED','SKIPPED');
 
 CREATE TYPE component_type AS ENUM (
-  'CustomObject','CustomField','ApexClass','ApexTrigger','ApexMethod');
+  'CustomObject','StandardObject','CustomField',
+  'ApexClass','ApexTrigger','ApexMethod',
+  'LightningComponentBundle','AuraDefinitionBundle');
 
 CREATE TYPE verdict AS ENUM (
   'USED','UNUSED','NEEDS_REVIEW','OUT_OF_SCOPE');

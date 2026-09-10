@@ -501,6 +501,8 @@ def _destructive_type(ctype: str) -> str:
     return {
         "CustomField": "CustomField", "CustomObject": "CustomObject",
         "ApexClass": "ApexClass", "ApexTrigger": "ApexTrigger",
+        "LightningComponentBundle": "LightningComponentBundle",
+        "AuraDefinitionBundle": "AuraDefinitionBundle",
     }.get(ctype, ctype)
 
 

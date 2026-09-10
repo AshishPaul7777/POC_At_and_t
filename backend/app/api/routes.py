@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
 
 from app.db.session import session_scope
+from app.pipeline.apex_kind import enrich_component_rows_with_apex_kind
 from app.pipeline.graph import build_graph, compute_reachability, to_cytoscape
 
 router = APIRouter(prefix="/api", tags=["analysis"])
@@ -30,6 +31,7 @@ async def list_runs() -> list[dict]:
         rows = (await s.execute(text("""
             SELECT r.id::text, r.org_id, r.org_alias, r.state::text, r.api_version,
                    r.run_as_username, r.started_at, r.finished_at, r.last_seq,
+                   r.config,
                    (SELECT count(*) FROM components c
                      WHERE c.run_id = r.id AND c.in_scope) AS components,
                    (SELECT count(*) FROM classifications cl
@@ -62,7 +64,7 @@ async def summary(run_id: str) -> dict:
 
         run = (await s.execute(text("""
             SELECT org_alias, org_id, state::text AS state, api_version,
-                   run_as_username, started_at, finished_at
+                   run_as_username, started_at, finished_at, config
               FROM runs WHERE id = :r
         """), {"r": run_id})).mappings().first()
 
@@ -102,11 +104,19 @@ async def components(
     verdict: str | None = None,
     ctype: str | None = None,
     q: str | None = None,
+    # Repeated "collector_id:RESULT" tags, ANDed together.
+    # Example: ev=C10_static_index:EVIDENCE_OF_USE&ev=C40_runtime:NO_EVIDENCE_FOUND
+    ev: list[str] | None = Query(None),
     limit: int = Query(500, le=5000),
 ) -> list[dict]:
     sql = """
         SELECT c.id, c.ctype::text AS ctype, c.api_name, c.label,
-               c.parent_object, c.in_scope, c.last_modified_date,
+               -- parent_id lets the client group methods under their class
+               -- without a second request. parent_object cannot do that job:
+               -- for a trigger it holds TableEnumOrId, the object the trigger
+               -- fires on, not the thing that contains it.
+               c.parent_object, c.parent_id, c.in_scope, c.last_modified_date,
+               c.attrs,
                cl.label::text AS verdict, cl.confidence, cl.reason_codes,
                cl.had_gaps, cl.removal_prerequisites,
                (SELECT count(*) FROM evidence e
@@ -135,11 +145,90 @@ async def components(
     if q:
         sql += " AND c.api_name ILIKE :q"
         params["q"] = f"%{q}%"
+
+    # Each tag requires that collector to have that exact evidence result —
+    # or, for flag-only collectors (C50/C60), a matching uncertainty flag.
+    _ALLOWED_RESULTS = {
+        "EVIDENCE_OF_USE", "NO_EVIDENCE_FOUND", "NOT_APPLICABLE",
+        "INCONCLUSIVE", "FAILED", "FLAGGED", "NO_FLAG",
+    }
+    _FLAG_CODES = {
+        "C50_temporal": ["RECENTLY_CHANGED"],
+        "C60_dynamic_apex": ["DYNAMIC_APEX_IN_SCOPE"],
+    }
+    for i, raw in enumerate(ev or []):
+        if ":" not in raw:
+            continue
+        cid, _, res = raw.partition(":")
+        cid, res = cid.strip(), res.strip()
+        if not cid or res not in _ALLOWED_RESULTS:
+            continue
+
+        # Flag-only collectors never write evidence rows.
+        if cid in _FLAG_CODES and res in ("FLAGGED", "NO_FLAG",
+                                          "EVIDENCE_OF_USE", "NO_EVIDENCE_FOUND"):
+            codes_key = f"ev_codes{i}"
+            params[codes_key] = _FLAG_CODES[cid]
+            if res in ("FLAGGED", "EVIDENCE_OF_USE"):
+                sql += f"""
+                  AND EXISTS (
+                    SELECT 1 FROM uncertainty_flags u
+                     WHERE u.component_id = c.id
+                       AND u.code = ANY(:{codes_key})
+                  )
+                """
+            else:
+                sql += f"""
+                  AND NOT EXISTS (
+                    SELECT 1 FROM uncertainty_flags u
+                     WHERE u.component_id = c.id
+                       AND u.code = ANY(:{codes_key})
+                  )
+                """
+            continue
+
+        # NOT_APPLICABLE also matches "no evidence row" for that collector,
+        # which is how the check-flow treats skipped evidence steps.
+        if res == "NOT_APPLICABLE":
+            # For flag-only collectors, "not applicable" is the old mistaken
+            # label — do not match everything; skip the tag.
+            if cid in _FLAG_CODES:
+                continue
+            sql += f"""
+              AND (
+                EXISTS (
+                  SELECT 1 FROM evidence e
+                   WHERE e.component_id = c.id
+                     AND e.collector_id = :ev_c{i}
+                     AND e.result = 'NOT_APPLICABLE'
+                )
+                OR NOT EXISTS (
+                  SELECT 1 FROM evidence e
+                   WHERE e.component_id = c.id
+                     AND e.collector_id = :ev_c{i}
+                )
+              )
+            """
+            params[f"ev_c{i}"] = cid
+        else:
+            sql += f"""
+              AND EXISTS (
+                SELECT 1 FROM evidence e
+                 WHERE e.component_id = c.id
+                   AND e.collector_id = :ev_c{i}
+                   AND e.result::text = :ev_r{i}
+              )
+            """
+            params[f"ev_c{i}"] = cid
+            params[f"ev_r{i}"] = res
+
     sql += " ORDER BY cl.label, cl.confidence DESC, c.api_name LIMIT :lim"
 
     async with session_scope() as s:
         rows = (await s.execute(text(sql), params)).mappings().all()
-    return [dict(r) for r in rows]
+    # Stamp apex_kind for Overview buckets. Works on existing runs without a
+    # re-inventory: class interfaces + method annotations are already in attrs.
+    return enrich_component_rows_with_apex_kind([dict(r) for r in rows])
 
 
 @router.get("/runs/{run_id}/components/{component_id}")
@@ -179,17 +268,50 @@ async def component_detail(run_id: str, component_id: int) -> dict:
         """), {"c": component_id})).mappings().all()
 
         flags = (await s.execute(text("""
-            SELECT code, severity, detail FROM uncertainty_flags
+            SELECT code, severity, detail, source_ref FROM uncertainty_flags
              WHERE component_id = :c
         """), {"c": component_id})).mappings().all()
 
         refs = (await s.execute(text("""
-            SELECT a.metadata_type, a.member_name, a.is_active, a.is_test,
-                   e.tier::text AS tier, e.match_kind, e.tags
-              FROM reference_edges e JOIN artifact a ON a.id = e.from_artifact_id
+            SELECT a.id AS artifact_id, a.metadata_type, a.member_name, a.file_path,
+                   a.is_active, a.is_test,
+                   e.tier::text AS tier, e.match_kind, e.tags,
+                   (
+                     SELECT c2.id FROM components c2
+                      WHERE c2.run_id = :r
+                        AND (
+                          (a.metadata_type IN ('ApexClass', 'ApexTrigger',
+                                'LightningComponentBundle', 'AuraDefinitionBundle')
+                           AND c2.ctype::text = a.metadata_type
+                           AND lower(c2.api_name) = lower(a.member_name))
+                          OR
+                          (a.metadata_type = 'CustomObject'
+                           AND c2.ctype::text IN ('CustomObject', 'StandardObject')
+                           AND lower(c2.api_name) = lower(a.member_name))
+                        )
+                      LIMIT 1
+                   ) AS from_component_id
+              FROM reference_edges e
+              JOIN artifact a ON a.id = e.from_artifact_id
+              JOIN components tgt ON tgt.id = e.to_component_id
              WHERE e.to_component_id = :c
+               -- Drop self: Apex/LWC/Aura artifact naming the same component.
+               AND NOT (
+                 a.metadata_type IN ('ApexClass', 'ApexTrigger',
+                       'LightningComponentBundle', 'AuraDefinitionBundle')
+                 AND lower(a.member_name) = lower(tgt.api_name)
+               )
+               -- Drop self: field declared inside its parent object's metadata.
+               AND NOT (
+                 tgt.ctype = 'CustomField'
+                 AND a.metadata_type = 'CustomObject'
+                 AND lower(a.member_name) = lower(coalesce(tgt.parent_object, ''))
+               )
              ORDER BY e.tier, a.metadata_type, a.member_name LIMIT 200
-        """), {"c": component_id})).mappings().all()
+        """), {"c": component_id, "r": run_id})).mappings().all()
+
+        run_cfg = (await s.execute(text(
+            "SELECT config FROM runs WHERE id = :r"), {"r": run_id})).scalar()
 
         # AI narration is returned in its own key, never merged into evidence.
         # The UI must be able to render it as unmistakably generated: a reader
@@ -197,10 +319,11 @@ async def component_detail(run_id: str, component_id: int) -> dict:
         llm = (await s.execute(text("""
             SELECT provider, model, business_purpose, evidence_recap, risk_note,
                    unused_rationale, status, generated_at, prompt_sha256,
-                   request, input_tokens, output_tokens
+                   request, response, input_tokens, output_tokens
               FROM llm_artifacts WHERE component_id = :c
         """), {"c": component_id})).mappings().first()
 
+    cfg = run_cfg if isinstance(run_cfg, dict) else {}
     return {
         "component": dict(comp),
         "classification": dict(cls) if cls else None,
@@ -209,6 +332,9 @@ async def component_detail(run_id: str, component_id: int) -> dict:
         "flags": [dict(f) for f in flags],
         "references": [dict(r) for r in refs],
         "llm": dict(llm) if llm else None,
+        "run_config": {
+            "recent_change_days": cfg.get("recent_change_days"),
+        },
     }
 
 

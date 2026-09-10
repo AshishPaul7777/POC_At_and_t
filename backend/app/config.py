@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 4000
     llm_max_concurrency: int = 5
     llm_timeout_seconds: float = 120.0
+    # Rate-limit backoff for narration (and any json_call). Sleep grows as
+    # sleep * 2^attempt between retries; total attempts = 1 + retries.
+    llm_rate_limit_retries: int = 3
+    llm_rate_limit_sleep_seconds: float = 15.0
     # Optional gateway/proxy in front of the provider. Read from the standard
     # provider env vars (ANTHROPIC_BASE_URL / OPENAI_BASE_URL) so an existing
     # shell environment works without duplicating config here.
@@ -100,8 +104,9 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
 
     # -- Analysis tuning -------------------------------------------------------
-    # Half-built features look exactly like dead ones, so anything touched
-    # recently is capped at NEEDS_REVIEW.
+    # Half-built features look like dead ones. Recent changes raise a Tier-D
+    # flag for visibility only — they do NOT force NEEDS_REVIEW (R6 ignores
+    # RECENTLY_CHANGED).
     analysis_recent_change_days: int = 90
     analysis_exclude_namespaced: bool = True
     analysis_enable_delete_rehearsal: bool = True
@@ -115,6 +120,14 @@ class Settings(BaseSettings):
     # permitted. 1.0 means all of them: absence of evidence is not evidence of
     # absence. Lowering this trades safety for a shorter review queue.
     analysis_completeness_threshold: float = Field(default=1.0, ge=0.0, le=1.0)
+
+    # Event Monitoring: local CSV stand-ins under this dir, plus live
+    # EventLogFile downloads when the org has rows (ApexExecution / ApexTrigger /
+    # ApexCallout). Relative paths resolve against the repo root.
+    event_log_dir: Path = Path("backend/event_data")
+    event_log_lookback_days: int = 14
+    event_log_max_files: int = 30
+    event_log_max_files_per_type: int = 3
 
     # -- Runtime ---------------------------------------------------------------
     log_level: str = "INFO"

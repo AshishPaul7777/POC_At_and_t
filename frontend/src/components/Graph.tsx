@@ -3,6 +3,7 @@ import cytoscape from 'cytoscape'
 import fcose from 'cytoscape-fcose'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { GraphPayload } from '../lib/api'
+import { explainDecision, explainReasons } from '../lib/explain'
 
 cytoscape.use(fcose)
 
@@ -80,38 +81,9 @@ interface Hovered {
 }
 
 /**
- * Reason codes are precise but written for the database. A tooltip has one line
- * to land, so each is translated into the sentence a reviewer actually needs.
+ * Reason codes are translated in `explain.ts` so Graph and DetailPanel never
+ * disagree on wording.
  */
-const WHY: [RegExp, string][] = [
-  [/LAYOUT_ONLY_NO_DATA/, 'Only a layout references it, and no record holds a value'],
-  [/UNREACHABLE/, 'Nothing that runs or is seen can reach it'],
-  [/NO_EVIDENCE_FROM_ANY_COLLECTOR/, 'Every check ran and none found anything'],
-  [/REACHABLE_FROM_ENTRY_POINT/, 'Reachable from something that runs or is seen'],
-  [/BINDING_REFERENCE/, 'Something references it in a way that would break a deploy'],
-  [/RUNTIME_OR_DATA_EVIDENCE/, 'No static reference, but real data or runtime activity exists'],
-  [/UNCALLED_ENTRY_POINT/, 'Externally invocable - its caller lives outside the org'],
-  [/TEST_ONLY/, 'Only test code touches it; delete it with what it tests'],
-  [/BLOCKED_BY_DEPENDENT/, 'Something that is not itself unused still references it'],
-  [/DYNAMIC_APEX_IN_SCOPE/, 'Reachable from Apex that builds names at runtime'],
-  [/INSUFFICIENT_EVIDENCE/, 'A required check could not run, so nothing is proven'],
-  [/WEAK_SIGNAL/, 'Only permissions, labels, comments or inactive automation'],
-  [/RECENTLY_CHANGED/, 'Changed recently - may be in progress rather than abandoned'],
-  [/STALE_OR_TEST_ONLY/, 'Referenced only by inactive or test consumers'],
-  [/MANAGED_PACKAGE/, 'Belongs to an installed package and cannot be deleted'],
-  [/STANDARD_OBJECT|STANDARD/, 'A standard Salesforce component, not deletable'],
-  [/LLM_FLAGGED/, 'The AI raised a concern worth a human look'],
-]
-
-function explain(reasons: string[]): string[] {
-  const out: string[] = []
-  for (const r of reasons) {
-    const hit = WHY.find(([re]) => re.test(r))
-    const text = hit ? hit[1] : r.split(' (')[0].replaceAll('_', ' ').toLowerCase()
-    if (!out.includes(text)) out.push(text)
-  }
-  return out
-}
 interface Inspected {
   id: string; componentId: number | null; label: string; type: string; kind: string
   verdict: string | null; reachable: boolean; entryPoint: boolean
@@ -183,6 +155,14 @@ export function Graph({
   const [showLabels, setShowLabels] = useState(true)
   const [onlyUnreachable, setOnlyUnreachable] = useState(false)
   const [highlight, setHighlight] = useState<string | null>(null)
+  // Finding a named component in a few hundred nodes was previously impossible:
+  // the toolbar could re-lay-out and re-colour the graph but not answer "where
+  // is Customer_Order__c".
+  const [search, setSearch] = useState('')
+  const [matchCount, setMatchCount] = useState(0)
+  const [cursor, setCursor] = useState(0)
+  /** Ids of the current matches, in graph order. Written by the effect below. */
+  const matchIds = useRef<string[]>([])
   const [inspect, setInspect] = useState<Inspected | null>(null)
   const [hover, setHover] = useState<Hovered | null>(null)
 
@@ -336,8 +316,34 @@ export function Graph({
         },
         { selector: '.nolabel', style: { label: '' } },
         {
+          // Name-search matches: keep the label on so a hit is readable even
+          // when it is not a hub (the default label rule would hide it).
           selector: 'node.vhl',
-          style: { 'border-width': 3.5, 'border-color': colour.entry, 'z-index': 99 },
+          style: {
+            'border-width': 3.5,
+            'border-color': colour.entry,
+            'z-index': 99,
+            opacity: 1,
+            label: 'data(label)',
+            color: colour.bright,
+          },
+        },
+        {
+          // The match the cursor is on — halo so it is unmistakable among peers.
+          selector: 'node.vhl-cur',
+          style: {
+            'border-width': 5,
+            'border-color': colour.entry,
+            'underlay-color': colour.entry,
+            'underlay-padding': 8,
+            'underlay-opacity': 0.4,
+            'underlay-shape': 'round-rectangle',
+            'z-index': 120,
+            opacity: 1,
+            label: 'data(label)',
+            color: colour.bright,
+            'font-size': 11,
+          },
         },
       ],
       layout: LAYOUTS[layout].opts as never,
@@ -438,24 +444,60 @@ export function Graph({
     return () => { ro.disconnect(); cy.destroy() }
   }, [data, onSelect, layout])
 
-  // Highlight by classification. Dimming rather than hiding keeps the structure
-  // visible: seeing an amber node sitting alone in a dense cluster is the
-  // finding, and removing its neighbours would destroy exactly that context.
+  // Highlight by name or by classification. Dimming rather than hiding keeps
+  // the structure visible: seeing an amber node sitting alone in a dense cluster
+  // is the finding, and removing its neighbours would destroy exactly that
+  // context. A name search wins over the verdict highlight when both are set --
+  // you typed a name because you want that node, not a category.
   useEffect(() => {
     const cy = cyRef.current
-    if (!cy || inspect) return
+    if (!cy) return
+    const q = search.trim().toLowerCase()
     cy.batch(() => {
-      if (!highlight) {
-        cy.elements().removeClass('dim').removeClass('vhl')
+      cy.elements().removeClass('vhl').removeClass('vhl-cur')
+      if (!q && !highlight) {
+        // Leave click-inspect dimming alone when the user is not searching.
+        if (!inspect) cy.elements().removeClass('dim')
+        matchIds.current = []
+        setMatchCount(0)
+        setCursor(0)
         return
       }
-      cy.elements().addClass('dim').removeClass('vhl')
-      const matched = cy.nodes().filter((n) => n.data('verdict') === highlight)
-      matched.removeClass('dim').addClass('vhl')
+      // A typed search replaces the click-inspect view: the question is now
+      // "where is this name", not "what did I last tap".
+      if (q) setInspect(null)
+      cy.elements().addClass('dim').removeClass('hl')
+      const matched = q
+        ? cy.nodes().filter((n) =>
+            String(n.data('label') ?? '').toLowerCase().includes(q))
+        : cy.nodes().filter((n) => n.data('verdict') === highlight)
+      matched.removeClass('dim').removeClass('nolabel').addClass('vhl')
       matched.connectedEdges().removeClass('dim')
       matched.neighborhood('node').removeClass('dim')
+      // Only a name search is steppable; a verdict highlight is a view, not a
+      // cursor through a result list.
+      matchIds.current = q ? matched.map((n) => n.id()) : []
+      setMatchCount(matchIds.current.length)
+      setCursor(0)
+      cy.nodes().removeClass('vhl-cur')
+      if (matchIds.current.length) {
+        const first = cy.getElementById(matchIds.current[0])
+        if (!first.empty()) first.addClass('vhl-cur')
+      }
     })
-  }, [highlight, inspect, data])
+    // Centre once after the batch so we do not fight layout mid-update. Only
+    // when there is a name query — verdict filters are a whole-graph view.
+    if (search.trim() && matchIds.current.length) {
+      const cy = cyRef.current
+      const first = cy?.getElementById(matchIds.current[0])
+      if (cy && first && !first.empty()) {
+        cy.animate(
+          { center: { eles: first }, zoom: Math.max(cy.zoom(), 1.05) },
+          { duration: 240 },
+        )
+      }
+    }
+  }, [highlight, search, data])
 
   useEffect(() => {
     const cy = cyRef.current
@@ -474,6 +516,32 @@ export function Graph({
       })
     })
   }, [showLabels, onlyUnreachable, data])
+
+  /**
+   * Move the viewport to the next match.
+   *
+   * Centres rather than calling `jump`, which emits a tap: opening the
+   * inspector would short-circuit the search highlight and drop the dimming.
+   */
+  const step = useCallback((delta: number) => {
+    const ids = matchIds.current
+    if (!ids.length) return
+    setCursor((was) => {
+      const next = (was + delta + ids.length) % ids.length
+      const cy = cyRef.current
+      if (!cy) return next
+      cy.nodes().removeClass('vhl-cur')
+      const n = cy.getElementById(ids[next])
+      if (!n.empty()) {
+        n.addClass('vhl-cur')
+        cy.animate(
+          { center: { eles: n }, zoom: Math.max(cy.zoom(), 1.05) },
+          { duration: 220 },
+        )
+      }
+      return next
+    })
+  }, [])
 
   const fit = useCallback(() => cyRef.current?.fit(undefined, 45), [])
   const png = useCallback(() => {
@@ -495,6 +563,33 @@ export function Graph({
             <option key={k} value={k}>{v.label}</option>
           ))}
         </select>
+
+        <span className="tb-sep" />
+        <div className="graph-search">
+          <input value={search} placeholder="find a component..."
+                 onChange={(e) => setSearch(e.target.value)}
+                 onKeyDown={(e) => {
+                   if (e.key !== 'Enter') return
+                   e.preventDefault()
+                   step(e.shiftKey ? -1 : 1)
+                 }} />
+          {search.trim() && (
+            <span className="tb-hint">
+              {matchCount ? `${cursor + 1} of ${matchCount}` : 'no match'}
+            </span>
+          )}
+          {search && (
+            <>
+              <button className="ghost sm" disabled={!matchCount}
+                      title="Previous match (Shift+Enter)"
+                      onClick={() => step(-1)}>&lt;</button>
+              <button className="ghost sm" disabled={!matchCount}
+                      title="Next match (Enter)"
+                      onClick={() => step(1)}>&gt;</button>
+              <button className="linkish" onClick={() => setSearch('')}>clear</button>
+            </>
+          )}
+        </div>
 
         <span className="tb-sep" />
         <span className="tb-label">Highlight</span>
@@ -558,11 +653,21 @@ export function Graph({
                     {hover.cls ? ` · ${hover.cls.confidence}` : ''}
                   </span>
                 </div>
-                {hover.cls && hover.cls.reasons.length > 0 && (
+                {hover.cls && (hover.verdict || hover.cls.reasons.length > 0) && (
                   <div className="gtip-why">
                     <span className="gtip-k">Why</span>
                     <ul>
-                      {explain(hover.cls.reasons).map((w, i) => <li key={i}>{w}</li>)}
+                      {(() => {
+                        const d = explainDecision({
+                          label: hover.verdict ?? hover.cls.label,
+                          reason_codes: hover.cls.reasons,
+                        })
+                        return [
+                          ...(hover.verdict ? [d.headline] : []),
+                          d.because,
+                          ...(!hover.verdict ? explainReasons(hover.cls.reasons) : []),
+                        ].filter((w, i, a) => w && a.indexOf(w) === i)
+                      })().map((w, i) => <li key={i}>{w}</li>)}
                     </ul>
                   </div>
                 )}

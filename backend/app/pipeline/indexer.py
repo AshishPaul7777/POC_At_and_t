@@ -65,7 +65,8 @@ FOLDER_TO_TYPE: dict[str, str] = {
 #: Files whose content is meaningful to search. Binary/static assets are
 #: recorded as artifacts but not tokenised.
 TEXTUAL_SUFFIXES = {
-    ".xml", ".cls", ".trigger", ".page", ".component", ".js", ".html", ".css",
+    ".xml", ".cls", ".trigger", ".page", ".component", ".cmp", ".app", ".evt",
+    ".js", ".html", ".css",
     ".object", ".layout", ".flow", ".workflow", ".report", ".dashboard",
     ".reporttype", ".email", ".profile", ".permissionset", ".permissionsetgroup",
     ".app", ".flexipage", ".quickaction", ".tab", ".labels", ".sharingrules",
@@ -101,7 +102,7 @@ TEXTUAL_SUFFIXES = {
 #: treated as evidence.
 NON_REFERENCE_KINDS = frozenset({"stripped_suffix", "label"})
 
-CODE_SUFFIXES = {".cls", ".trigger", ".js", ".ts", ".page", ".component"}
+CODE_SUFFIXES = {".cls", ".trigger", ".js", ".ts", ".page", ".component", ".cmp", ".app"}
 
 # Identifiers, including the __c / __r / __mdt suffixes that matter here.
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:__[cerbx]|__mdt)?", re.ASCII)
@@ -111,6 +112,35 @@ _LITERAL_RE = re.compile(r"'([^'\n\\]{2,120})'|\"([^\"\n\\]{2,120})\"")
 _MERGE_RE = re.compile(r"\{!\s*([^}]{2,200})\}")
 # Report and Custom Report Type column refs: Customer_Order__c$Legacy_Code__c
 _REPORT_COL_RE = re.compile(r"([A-Za-z0-9_]+\$[A-Za-z0-9_]+)")
+
+# UI cross-references that the plain tokeniser cannot keep together.
+_LWC_IMPORT_RE = re.compile(
+    r"""from\s+['"]c/([A-Za-z]\w*)['"]""", re.I)
+_LWC_NS_IMPORT_RE = re.compile(
+    r"""from\s+['"]c/([\w]+)/([A-Za-z]\w*)['"]""", re.I)
+_AURA_TAG_RE = re.compile(r"<(?:c|[\w]+):([A-Za-z]\w*)\b")
+_AURA_DEP_RE = re.compile(
+    r"""resource\s*=\s*['"](?:markup://)?(?:c|[\w]+):([A-Za-z]\w*)['"]""",
+    re.I)
+_COMPONENT_NAME_RE = re.compile(
+    r"<componentName>\s*((?:[\w]+[:/])?[A-Za-z]\w*)\s*</componentName>",
+    re.I)
+_LWC_ELEMENT_RE = re.compile(r"<(c-[a-z][a-z0-9]*(?:-[a-z0-9]+)*)\b")
+_TAB_LWC_RE = re.compile(
+    r"<lwcComponent>\s*([A-Za-z]\w*)\s*</lwcComponent>", re.I)
+_TAB_AURA_RE = re.compile(
+    r"<auraComponent>\s*((?:[\w]+[:/])?[A-Za-z]\w*)\s*</auraComponent>",
+    re.I)
+
+#: Target component types for which App/Tab placement is Tier-A use (not weak).
+UI_COMPONENT_TYPES = frozenset({
+    "LightningComponentBundle", "AuraDefinitionBundle",
+})
+
+#: App/Tab are weak for fields (navigation), but placement for UI bundles.
+UI_PLACEMENT_CONSUMER_TYPES = frozenset({
+    "CustomApplication", "CustomTab",
+})
 
 # DYNAMIC_MARKERS now lives in source_text, where it is applied to code with
 # comments already stripped — a commented-out Database.query() should not taint
@@ -157,12 +187,12 @@ def _is_test_artifact(path: Path, content: str) -> bool:
     return "@istest" in content[:4000].lower()
 
 
-def _is_active(mdtype: str, content: str) -> bool:
+def _is_active(mdtype: str, content: str, abs_path: Path | None = None) -> bool:
     """Is the consumer live?
 
-    A reference from an inactive Flow or a deactivated workflow rule cannot prove
-    current use, but it still blocks deletion because the consumer can be
-    switched back on. Such references are recorded and downgraded, not dropped.
+    A reference from an inactive Flow, deactivated rule, or Inactive Apex class
+    cannot prove current use. Such consumers are marked inactive so C10 only
+    counts active artifacts.
     """
     low = content.lower()
     if mdtype in ("Flow", "FlowDefinition"):
@@ -171,12 +201,69 @@ def _is_active(mdtype: str, content: str) -> bool:
     if mdtype in ("Workflow", "ValidationRule", "ApprovalProcess", "DuplicateRule"):
         if "<active>false</active>" in low:
             return False
+    if mdtype in ("ApexClass", "ApexTrigger") and abs_path is not None:
+        meta = Path(str(abs_path) + "-meta.xml")
+        if meta.is_file():
+            try:
+                meta_low = meta.read_text(encoding="utf-8", errors="replace").lower()
+            except OSError:
+                meta_low = ""
+            if "<status>inactive</status>" in meta_low:
+                return False
     return True
 
 
 def _is_apex_meta(rel: Path) -> bool:
     n = rel.name.lower()
     return n.endswith(".cls-meta.xml") or n.endswith(".trigger-meta.xml")
+
+
+def _member_name(rel: Path, mdtype: str) -> str:
+    """Artifact member key. LWC/Aura folders share one member across files."""
+    if mdtype in UI_COMPONENT_TYPES and len(rel.parts) >= 2:
+        return rel.parts[1]
+    return rel.stem
+
+
+def _ui_reference_literals(content: str) -> dict[str, str]:
+    """Exact UI reference forms the plain tokeniser would split apart."""
+    out: dict[str, str] = {}
+    for m in _LWC_IMPORT_RE.finditer(content):
+        name = m.group(1)
+        out.setdefault(f"c/{name}".lower(), "lwc_import")
+        out.setdefault(name.lower(), "lwc_import")
+    for m in _LWC_NS_IMPORT_RE.finditer(content):
+        ns, name = m.group(1), m.group(2)
+        out.setdefault(f"{ns}/{name}".lower(), "lwc_ns_import")
+        out.setdefault(f"c/{name}".lower(), "lwc_ns_import")
+        out.setdefault(name.lower(), "lwc_ns_import")
+    for m in _AURA_TAG_RE.finditer(content):
+        name = m.group(1)
+        out.setdefault(f"c:{name}".lower(), "aura_tag")
+        out.setdefault(name.lower(), "aura_tag")
+    for m in _AURA_DEP_RE.finditer(content):
+        name = m.group(1)
+        out.setdefault(f"c:{name}".lower(), "aura_dependency")
+        out.setdefault(name.lower(), "aura_dependency")
+    for m in _COMPONENT_NAME_RE.finditer(content):
+        raw = m.group(1).strip()
+        out.setdefault(raw.lower(), "flexipage_component")
+        if ":" in raw:
+            out.setdefault(raw.split(":", 1)[-1].lower(), "flexipage_component")
+        if "/" in raw:
+            out.setdefault(raw.split("/", 1)[-1].lower(), "flexipage_component")
+    for m in _LWC_ELEMENT_RE.finditer(content):
+        out.setdefault(m.group(1).lower(), "lwc_element")
+    for m in _TAB_LWC_RE.finditer(content):
+        name = m.group(1)
+        out.setdefault(name.lower(), "tab_lwc")
+        out.setdefault(f"c/{name}".lower(), "tab_lwc")
+    for m in _TAB_AURA_RE.finditer(content):
+        raw = m.group(1).strip()
+        out.setdefault(raw.lower(), "tab_aura")
+        if ":" in raw:
+            out.setdefault(raw.split(":", 1)[-1].lower(), "tab_aura")
+    return out
 
 
 def scan_workspace(root: Path) -> list[tuple[Path, Path]]:
@@ -200,6 +287,7 @@ async def index_workspace(run_id: str, workspace: Path) -> IndexStats:
 
     aliases = await _load_aliases(run_id)
     parents = await _load_parents(run_id)
+    ctypes = await _load_component_types(run_id)
     ambiguous = sum(1 for v in aliases.values() if len({c for c, _ in v}) > 1)
     log.info("index_start", files=len(files), aliases=len(aliases),
              ambiguous_aliases=ambiguous)
@@ -218,8 +306,8 @@ async def index_workspace(run_id: str, workspace: Path) -> IndexStats:
                     stats.unreadable.append(f"{rel}: {e}")
 
             is_test = _is_test_artifact(abs_path, content)
-            active = _is_active(mdtype, content)
-            member = rel.stem
+            active = _is_active(mdtype, content, abs_path)
+            member = _member_name(rel, mdtype)
 
             artifact_id = await _insert_artifact(
                 s, run_id, mdtype, member, str(rel), is_test=is_test, active=active,
@@ -228,6 +316,15 @@ async def index_workspace(run_id: str, workspace: Path) -> IndexStats:
             stats.by_type[mdtype] += 1
 
             if not content:
+                continue
+
+            # Inactive Apex / Flow / rules are inventoried but not scanned for
+            # outbound references — static-ref evidence only comes from active
+            # consumers.
+            if not active and mdtype in (
+                "ApexClass", "ApexTrigger", "Flow", "FlowDefinition",
+                "Workflow", "ValidationRule", "ApprovalProcess", "DuplicateRule",
+            ):
                 continue
 
             # Comments are separated BEFORE tokenising. Counting a name in a
@@ -254,6 +351,7 @@ async def index_workspace(run_id: str, workspace: Path) -> IndexStats:
                 stats.tokens += len(tokens)
 
             literals = _literals_from(ex)
+            literals.update(_ui_reference_literals(ex.code))
             if literals:
                 await _insert_literals(s, run_id, artifact_id, literals)
                 stats.literals += len(literals)
@@ -261,11 +359,13 @@ async def index_workspace(run_id: str, workspace: Path) -> IndexStats:
             edges, suppressed = _resolve(aliases, tokens, literals, mdtype,
                                          is_test, active, parents,
                                          comment_tokens,
-                                         abs_path.suffix.lower())
+                                         abs_path.suffix.lower(),
+                                         ctypes)
             for alias_lc, n in suppressed.items():
                 stats.suppressed_bare[alias_lc] += n
             if edges:
-                await _insert_edges(s, run_id, artifact_id, edges)
+                await _insert_edges(s, run_id, artifact_id, edges,
+                                    consumer_active=active, consumer_is_test=is_test)
                 stats.edges += len(edges)
 
     # The most-suppressed names, so a wrong stop-list entry is visible rather
@@ -344,6 +444,7 @@ def _resolve(
     parents: dict[int, str] | None = None,
     comment_tokens: dict[str, int] | None = None,
     suffix: str = "",
+    ctypes: dict[int, str] | None = None,
 ) -> tuple[list[dict], Counter[str]]:
     """Match extracted strings against the alias table.
 
@@ -351,16 +452,27 @@ def _resolve(
     (Tier A). A label-only match is a coincidence risk (Tier C). References from
     tests, from inactive consumers, or from permission metadata are downgraded
     regardless of how they were found - none of them prove current use.
+
+    Exception: CustomTab / CustomApplication naming an LWC or Aura bundle is
+    deliberate placement — Tier A for those target types only.
     """
     seen: dict[tuple[int, str], dict] = {}
     suppressed: Counter[str] = Counter()
     is_code = suffix in CODE_SUFFIXES
     weak_consumer = mdtype in WEAK_CONSUMER_TYPES
+    placement_for_ui = mdtype in UI_PLACEMENT_CONSUMER_TYPES
     parents = parents or {}
+    ctypes = ctypes or {}
 
     def add(component_id: int, kind: str, match_kind: str, tier: str,
             ambiguous: bool = False) -> None:
-        if is_test or not active or weak_consumer:
+        target_ctype = ctypes.get(component_id, "")
+        downgrade = is_test or not active
+        if weak_consumer:
+            # App/Tab → UI bundle is placement (use). Same App/Tab → field stays weak.
+            if not (placement_for_ui and target_ctype in UI_COMPONENT_TYPES):
+                downgrade = True
+        if downgrade:
             tier = "C"
         key = (component_id, match_kind)
         prev = seen.get(key)
@@ -456,6 +568,14 @@ async def _load_aliases(run_id: str) -> dict[str, list[tuple[int, str]]]:
     return out
 
 
+async def _load_component_types(run_id: str) -> dict[int, str]:
+    async with session_scope() as s:
+        rows = (await s.execute(text(
+            "SELECT id, ctype::text AS ctype FROM components WHERE run_id = :r"
+        ), {"r": run_id})).all()
+    return {r.id: r.ctype for r in rows}
+
+
 async def _load_parents(run_id: str) -> dict[int, str]:
     """component_id -> parent object, for disambiguating same-named fields."""
     async with session_scope() as s:
@@ -499,12 +619,16 @@ async def _insert_literals(s, run_id, artifact_id, literals: dict[str, str]) -> 
            for lit, origin in literals.items()])
 
 
-async def _insert_edges(s, run_id, artifact_id, edges: list[dict]) -> None:
+async def _insert_edges(
+    s, run_id, artifact_id, edges: list[dict],
+    *, consumer_active: bool = True, consumer_is_test: bool = False,
+) -> None:
     await s.execute(text("""
         INSERT INTO reference_edges (run_id, from_artifact_id, to_component_id,
             tier, match_kind, collector_id, consumer_active, consumer_is_test, tags)
         VALUES (:r, :a, :c, CAST(:tier AS evidence_tier), :mk,
-                'C10_static_index', TRUE, FALSE, :tags)
+                'C10_static_index', :active, :test, :tags)
     """), [{"r": run_id, "a": artifact_id, "c": e["component_id"],
             "tier": e["tier"], "mk": e["match_kind"],
+            "active": consumer_active, "test": consumer_is_test,
             "tags": [e["alias_kind"]]} for e in edges])

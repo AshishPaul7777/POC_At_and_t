@@ -53,6 +53,7 @@ app = FastAPI(
 from app.api.auth import router as auth_router   # noqa: E402
 from app.api.routes import router as api_router  # noqa: E402
 from app.api.chat import router as chat_router   # noqa: E402
+from app.api.explorer import router as explorer_router  # noqa: E402
 from app.api.runs import router as runs_router   # noqa: E402
 from app.auth.deps import current_user           # noqa: E402
 
@@ -67,6 +68,7 @@ _guard = [Depends(current_user)]
 app.include_router(api_router, dependencies=_guard)
 app.include_router(runs_router, dependencies=_guard)
 app.include_router(chat_router, dependencies=_guard)
+app.include_router(explorer_router, dependencies=_guard)
 
 app.add_middleware(
     CORSMiddleware,

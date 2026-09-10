@@ -42,6 +42,18 @@ class Extracted:
     #: True when a construct was found that makes static analysis undecidable.
     dynamic: bool = False
     dynamic_hits: list[str] = field(default_factory=list)
+    #: (start, end, kind) over the ORIGINAL source, contiguous and covering it.
+    #:
+    #: `code` above is built by appending characters -- comments vanish and every
+    #: string literal collapses to a single space -- so an offset into it means
+    #: nothing in the file it came from. That is fine for matching and useless
+    #: for showing a reader *where* a match is. These spans are the only way
+    #: back to a line number, and they are recorded alongside the existing
+    #: streams rather than replacing them: the matching behaviour must not move
+    #: because the UI wanted line numbers.
+    #:
+    #: kind is one of: code | comment | literal | markup
+    spans: list[tuple[int, int, str]] = field(default_factory=list)
 
 
 DYNAMIC_MARKERS = (
@@ -70,21 +82,36 @@ def extract_apex(src: str) -> Extracted:
     state = "code"  # code | line_comment | block_comment | s_quote | d_quote
     buf: list[str] = []
 
+    # Span bookkeeping. Purely additive: every `close()` call sits on a state
+    # transition that already existed, and none of them touch code/comments/lit.
+    spans: list[tuple[int, int, str]] = []
+    seg_start, seg_kind = 0, "code"
+
+    def close(at: int, kind: str, start: int) -> None:
+        nonlocal seg_start, seg_kind
+        if at > seg_start:
+            spans.append((seg_start, at, seg_kind))
+        seg_kind, seg_start = kind, start
+
     while i < n:
         c = src[i]
         nxt = src[i + 1] if i + 1 < n else ""
 
         if state == "code":
             if c == "/" and nxt == "/":
+                close(i, "comment", i)
                 state, i = "line_comment", i + 2
                 continue
             if c == "/" and nxt == "*":
+                close(i, "comment", i)
                 state, i = "block_comment", i + 2
                 continue
             if c == "'":
+                close(i, "literal", i)
                 state, buf, i = "s_quote", [], i + 1
                 continue
             if c == '"':
+                close(i, "literal", i)
                 state, buf, i = "d_quote", [], i + 1
                 continue
             code.append(c)
@@ -94,6 +121,7 @@ def extract_apex(src: str) -> Extracted:
         if state == "line_comment":
             if c == "\n":
                 comments.append("\n")
+                close(i, "code", i)
                 state = "code"
             else:
                 comments.append(c)
@@ -103,6 +131,7 @@ def extract_apex(src: str) -> Extracted:
         if state == "block_comment":
             if c == "*" and nxt == "/":
                 comments.append(" ")
+                close(i + 2, "code", i + 2)
                 state, i = "code", i + 2
                 continue
             comments.append(c)
@@ -122,19 +151,38 @@ def extract_apex(src: str) -> Extracted:
             # Replace the literal with a space so adjacent identifiers do not
             # accidentally fuse into a new token.
             code.append(" ")
+            # The closing quote belongs to the literal, so the span ends after it.
+            close(i + 1, "code", i + 1)
             state, i = "code", i + 1
             continue
         buf.append(c)
         i += 1
 
+    close(n, "code", n)
+
     out.code = "".join(code)
     out.comments = "".join(comments)
     out.literals = lit
+    out.spans = spans
 
     low = out.code.lower()
     out.dynamic_hits = [m for m in DYNAMIC_MARKERS if m in low]
     out.dynamic = bool(out.dynamic_hits)
     return out
+
+
+def _xml_spans(src: str) -> list[tuple[int, int, str]]:
+    """Comment regions, with everything between them as markup."""
+    spans: list[tuple[int, int, str]] = []
+    at = 0
+    for m in _XML_COMMENT.finditer(src):
+        if m.start() > at:
+            spans.append((at, m.start(), "markup"))
+        spans.append((m.start(), m.end(), "comment"))
+        at = m.end()
+    if at < len(src):
+        spans.append((at, len(src), "markup"))
+    return spans
 
 
 def extract_xml(src: str) -> Extracted:
@@ -145,6 +193,10 @@ def extract_xml(src: str) -> Extracted:
     body = _CDATA.sub(lambda m: " " + m.group(1) + " ", body)
     out.code = body
     out.comments = comments
+    # No refactor needed here: the comment matcher already runs over the
+    # original string, so its spans are directly usable and everything between
+    # them is markup.
+    out.spans = _xml_spans(src)
     low = body.lower()
     out.dynamic_hits = [m for m in DYNAMIC_MARKERS if m in low]
     out.dynamic = bool(out.dynamic_hits)

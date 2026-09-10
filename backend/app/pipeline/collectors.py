@@ -118,8 +118,8 @@ class CollectorOutcome:
 async def collect_static_references(run_id: str) -> CollectorOutcome:
     out = CollectorOutcome(
         "C10_static_index", "static_reference",
-        method="token sweep + string literals + merge fields over all retrieved "
-               "metadata, matched against the alias table",
+        method="token sweep + string literals + merge fields over active "
+               "retrieved metadata, matched against the alias table",
     )
     async with session_scope() as s:
         rows = (await s.execute(text("""
@@ -132,20 +132,34 @@ async def collect_static_references(run_id: str) -> CollectorOutcome:
                    -- itself — which silently defeats the whole analysis.
                    count(*) FILTER (
                      WHERE e.tier = 'A' AND NOT _self.is_self
+                       AND COALESCE(a.is_active, TRUE)
+                       AND COALESCE(e.consumer_active, TRUE)
                    ) AS tier_a,
-                   count(*) FILTER (WHERE e.tier = 'C') AS tier_c,
+                   count(*) FILTER (
+                     WHERE e.tier = 'C'
+                       AND COALESCE(a.is_active, TRUE)
+                       AND COALESCE(e.consumer_active, TRUE)
+                   ) AS tier_c,
                    -- Naming the weak sources turns "weak signal" into an
                    -- answerable question: "only a permission set grants access"
                    -- is something a reviewer can act on; "weak signal" is not.
                    array_agg(DISTINCT a.metadata_type) FILTER (
-                     WHERE e.tier = 'C' AND NOT _self.is_self) AS weak_sources,
+                     WHERE e.tier = 'C' AND NOT _self.is_self
+                       AND COALESCE(a.is_active, TRUE)
+                       AND COALESCE(e.consumer_active, TRUE)
+                   ) AS weak_sources,
                    count(DISTINCT e.from_artifact_id) FILTER (
-                     WHERE NOT _self.is_self)          AS sources,
+                     WHERE NOT _self.is_self
+                       AND COALESCE(a.is_active, TRUE)
+                       AND COALESCE(e.consumer_active, TRUE)
+                   )          AS sources,
                    -- Which consumer types produced the BINDING references?
                    -- A field known only to layouts is a different proposition
                    -- from one referenced by Apex or a Flow.
                    count(*) FILTER (
                      WHERE e.tier = 'A' AND a.metadata_type = 'Layout'
+                       AND COALESCE(a.is_active, TRUE)
+                       AND COALESCE(e.consumer_active, TRUE)
                    ) AS layout_refs,
                    -- SELF-DEFINITION EXCLUSION. A field is declared inside its
                    -- own object's metadata file, so a naive count treats every
@@ -154,21 +168,27 @@ async def collect_static_references(run_id: str) -> CollectorOutcome:
                    -- impossible: every field looks functionally referenced.
                    count(*) FILTER (
                      WHERE e.tier = 'A' AND NOT _self.is_self
+                       AND COALESCE(a.is_active, TRUE)
+                       AND COALESCE(e.consumer_active, TRUE)
                        AND a.metadata_type NOT IN ('Layout','FlexiPage','CompactLayout')
                    ) AS functional_refs,
                    array_agg(DISTINCT a.metadata_type) FILTER (
                      WHERE e.tier = 'A' AND NOT _self.is_self
+                       AND COALESCE(a.is_active, TRUE)
+                       AND COALESCE(e.consumer_active, TRUE)
                    ) AS binding_sources,
                    -- Named layouts, so the report can say exactly which ones to
                    -- edit rather than leaving the reader to go find them.
                    array_agg(DISTINCT a.member_name) FILTER (
                      WHERE e.tier = 'A'
+                       AND COALESCE(a.is_active, TRUE)
+                       AND COALESCE(e.consumer_active, TRUE)
                        AND a.metadata_type IN ('Layout','FlexiPage','CompactLayout')
                    ) AS layout_names
               FROM components c
               LEFT JOIN reference_edges e ON e.to_component_id = c.id
               LEFT JOIN artifact a ON a.id = e.from_artifact_id
-              LEFT JOIN LATERAL (SELECT
+                   LEFT JOIN LATERAL (SELECT
                     a.member_name IS NOT NULL AND (
                       -- a field declared in its own object's file
                       (a.metadata_type = 'CustomObject'
@@ -177,12 +197,17 @@ async def collect_static_references(run_id: str) -> CollectorOutcome:
                       OR (a.metadata_type IN ('ApexClass','ApexTrigger')
                           AND lower(a.member_name) IN (
                                 lower(c.api_name), lower(coalesce(c.parent_object,''))))
+                      -- LWC / Aura bundle naming itself
+                      OR (a.metadata_type IN (
+                                'LightningComponentBundle','AuraDefinitionBundle')
+                          AND lower(a.member_name) = lower(c.api_name))
                     ) AS is_self) _self ON TRUE
              WHERE c.run_id = :r AND c.in_scope
              GROUP BY c.id
         """), {"r": run_id})).all()
         total_artifacts = await s.scalar(
-            text("SELECT count(*) FROM artifact WHERE run_id = :r"), {"r": run_id}) or 0
+            text("SELECT count(*) FROM artifact WHERE run_id = :r AND is_active"),
+            {"r": run_id}) or 0
 
     out.artifacts = total_artifacts
     for r in rows:
@@ -344,17 +369,14 @@ async def collect_data_population(
 async def collect_dependency_api(
     run_id: str, sf: SalesforceClient, caps: OrgCapabilities
 ) -> CollectorOutcome:
-    """Salesforce's own record of what references what.
+    """Salesforce's own record of what references what (MetadataComponentDependency).
 
-    Positive-only. Its coverage is partial and org-dependent — measured with zero
-    rows for Reports, Dashboards, Validation Rules, Workflow Rules, Email
-    Templates and Approval Processes — so **absence here proves nothing** and is
-    recorded as INCONCLUSIVE, never NO_EVIDENCE_FOUND.
+    Component-level only (ApexClass, LWC, Flow, …) — not ApexMethod. A miss is
+    reported as NO_EVIDENCE_FOUND so the UI shows Nothing found.
     """
     out = CollectorOutcome(
         "C30_dependency_api", "dependency_graph",
-        method="MetadataComponentDependency (Beta; positive signal only, "
-               "absence is not evidence)",
+        method="MetadataComponentDependency (Tooling; component-level edges)",
     )
     if caps.has_dependency_api is False:
         out.status = "UNAVAILABLE"
@@ -395,7 +417,18 @@ async def collect_dependency_api(
         keys = [c.api_name.lower(), c.api_name.split(".")[-1].lower()]
         if c.sf_id:
             keys += [c.sf_id.lower(), c.sf_id[:15].lower()]
-        found = [d for k in keys for d in referenced.get(k, [])]
+        # The same edge is indexed under both name and Id, and a component is
+        # looked up under several aliases — without dedupe the UI lists
+        # "accountList (LWC)" three times for one real dependency.
+        seen: set[tuple[str | None, str | None]] = set()
+        found: list[dict] = []
+        for k in dict.fromkeys(keys):  # preserve order, drop duplicate keys
+            for d in referenced.get(k, []):
+                sig = (d.get("by"), d.get("by_type"))
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                found.append(d)
         if found:
             out.hits += 1
             out.evidence.append({
@@ -403,23 +436,19 @@ async def collect_dependency_api(
                 "weight": 1.0,
                 "payload": {"dependency_edges": len(found), "referenced_by": found[:6]}})
         else:
-            # Deliberately INCONCLUSIVE. The API's coverage is incomplete, so
-            # treating absence as negative evidence would manufacture false
-            # UNUSED verdicts at scale.
             out.evidence.append({
-                "component_id": c.id, "result": "INCONCLUSIVE", "tier": None,
+                "component_id": c.id, "result": "NO_EVIDENCE_FOUND", "tier": None,
                 "weight": 0.0, "payload": {
                     "dependency_edges": 0,
                     "rows_sampled": len(rows),
                     "truncated": truncated,
-                    "note": "Dependency API coverage is partial; absence proves "
-                            "nothing and is not counted against this component",
+                    "note": "not found",
                     "types_covered": caps.dependency_api_types[:12]}})
 
     if truncated:
         out.status = "PARTIAL"
         out.unavailable_reason = (
-            "hit the 2,000-row cap; dependency data is incomplete for this org")
+            "Dependency API returned the 2,000-row cap; some edges may be missing")
     return out
 
 
@@ -430,17 +459,65 @@ async def collect_dependency_api(
 async def collect_runtime(
     run_id: str, sf: SalesforceClient, caps: OrgCapabilities
 ) -> CollectorOutcome:
-    """Has this Apex actually executed?"""
+    """Runtime evidence for judged in-scope components.
+
+    Apex: AsyncApexJob / CronTrigger / coverage plus Event Monitoring.
+    LWC/Aura, CustomObject, CustomField: Event Monitoring only (optional
+    Tier B — not required for completeness).
+    """
+    from app.pipeline.event_logs import (
+        EventLogIndex,
+        fetch_event_logs_from_org,
+        load_event_logs,
+        payload_from_hit,
+    )
+
     out = CollectorOutcome(
         "C40_runtime", "runtime_telemetry",
-        method="AsyncApexJob (batch/queueable/schedulable runs), CronTrigger "
-               "(scheduled jobs), ApexCodeCoverageAggregate (test execution)",
+        method="AsyncApexJob / CronTrigger / coverage; EventLogFile types that "
+               "map to judged components (Apex*, LightningInteraction/PageView, "
+               "RestApi, UniqueQuery, DatabaseSave, ApexRestApi); optional local "
+               "CSVs under backend/event_data",
     )
     async with session_scope() as s:
-        classes = (await s.execute(text("""
-            SELECT id, api_name, sf_id FROM components
-             WHERE run_id = :r AND ctype IN ('ApexClass','ApexTrigger') AND in_scope
+        components = (await s.execute(text("""
+            SELECT id, api_name, sf_id, ctype::text AS ctype,
+                   parent_object, attrs
+              FROM components
+             WHERE run_id = :r
+               AND ctype IN (
+                   'ApexClass','ApexTrigger','ApexMethod',
+                   'LightningComponentBundle','AuraDefinitionBundle',
+                   'CustomObject','CustomField')
+               AND in_scope
         """), {"r": run_id})).all()
+
+    # Prefer live org logs; merge local CSVs (POC / demos) on top.
+    event_idx = EventLogIndex()
+    try:
+        org_idx = await fetch_event_logs_from_org(sf)
+        if org_idx.files_read:
+            event_idx.merge(org_idx)
+            caps.has_event_monitoring = True
+            caps.probe_notes["event_monitoring"] = (
+                f"downloaded {len(org_idx.files_read)} EventLogFile(s), "
+                f"{org_idx.rows} rows"
+            )
+    except Exception as e:
+        log.warning("event_log_org_fetch_failed", error=str(e)[:200])
+        out.error = (out.error or "") + f" EventLogFile: {str(e)[:120]}"
+
+    local_idx = load_event_logs()
+    if local_idx.files_read:
+        event_idx.merge(local_idx)
+
+    if event_idx.files_read:
+        out.artifacts += event_idx.rows
+
+    apex_rows = [c for c in components if c.ctype in (
+        "ApexClass", "ApexTrigger", "ApexMethod")]
+    other_rows = [c for c in components if c.ctype not in (
+        "ApexClass", "ApexTrigger", "ApexMethod")]
 
     ran: dict[str, dict] = {}
     try:
@@ -482,33 +559,117 @@ async def collect_runtime(
         except Exception:
             pass
 
-    for c in classes:
+    log_source = event_idx.source if event_idx.files_read else "none"
+
+    def _attrs(row) -> dict:
+        a = row.attrs
+        if isinstance(a, dict):
+            return a
+        return {}
+
+    def _ev_hit_for(row) -> object | None:
+        name = row.api_name or ""
+        ctype = row.ctype
+        if ctype == "ApexClass":
+            return event_idx.hit_for_apex_class(name)
+        if ctype == "ApexTrigger":
+            return event_idx.hit_for_trigger(name)
+        if ctype == "ApexMethod":
+            return event_idx.hit_for_method(name)
+        if ctype in ("LightningComponentBundle", "AuraDefinitionBundle"):
+            return event_idx.hit_for_ui(name)
+        if ctype == "CustomObject":
+            hit = event_idx.hit_for_object(name)
+            if hit and hit.total:
+                return hit
+            prefix = (_attrs(row).get("key_prefix") or "")
+            return event_idx.hit_for_key_prefix(str(prefix)) if prefix else None
+        if ctype == "CustomField":
+            return event_idx.hit_for_field(name, row.parent_object)
+        return None
+
+    for c in apex_rows:
         sid = (c.sf_id or "")[:15].lower()
-        job = ran.get(sid)
-        sched = c.api_name.lower() in scheduled
-        cov = coverage.get(sid, 0)
-        if job or sched:
+        name = c.api_name or ""
+        ctype = c.ctype
+        job = ran.get(sid) if ctype != "ApexMethod" else None
+        sched = name.lower() in scheduled if ctype == "ApexClass" else False
+        cov = coverage.get(sid, 0) if ctype != "ApexMethod" else 0
+        ev_hit = _ev_hit_for(c)
+        org_hit = bool(job or sched)
+        log_hit = bool(ev_hit and ev_hit.total > 0)
+
+        if org_hit or log_hit:
             out.hits += 1
+            payload: dict = {
+                "entity_name": name,
+                "async_runs": (job or {}).get("runs", 0),
+                "scheduled": sched,
+                "lines_covered": cov,
+            }
+            if log_hit and ev_hit:
+                payload.update(payload_from_hit(ev_hit, source=log_source))
             out.evidence.append({
                 "component_id": c.id, "result": "EVIDENCE_OF_USE", "tier": "B",
-                "weight": 0.9, "payload": {
-                    "async_runs": (job or {}).get("runs", 0),
-                    "scheduled": sched, "lines_covered": cov}})
+                "weight": 0.95 if log_hit else 0.9, "payload": payload})
         else:
+            note = (
+                "no async, scheduled, or event-log execution recorded. "
+                "Synchronous Apex with no Event Monitoring leave no trace "
+                "here, so this is weak evidence."
+            )
+            if event_idx.files_read:
+                src_label = (
+                    "org EventLogFile" if "event_log_file" in log_source
+                    else "local event logs"
+                )
+                note = (
+                    f"no async/scheduled job and no matching row in {src_label} "
+                    f"({len(event_idx.files_read)} file(s))"
+                )
             out.evidence.append({
                 "component_id": c.id, "result": "NO_EVIDENCE_FOUND", "tier": None,
                 "weight": 0.0, "payload": {
+                    "entity_name": name,
                     "async_runs": 0, "scheduled": False, "lines_covered": cov,
-                    "note": "no async or scheduled execution recorded. Synchronous "
-                            "Apex leaves no trace here, so this is weak evidence."}})
+                    "note": note}})
 
-    # Event Monitoring is the strongest runtime signal that exists. When it is
-    # absent, say so loudly rather than letting silence read as non-use.
-    if caps.has_event_monitoring is False:
+    for c in other_rows:
+        name = c.api_name or ""
+        ev_hit = _ev_hit_for(c)
+        log_hit = bool(ev_hit and ev_hit.total > 0)
+        if log_hit and ev_hit:
+            out.hits += 1
+            payload = {"entity_name": name}
+            payload.update(payload_from_hit(ev_hit, source=log_source))
+            out.evidence.append({
+                "component_id": c.id, "result": "EVIDENCE_OF_USE", "tier": "B",
+                "weight": 0.9, "payload": payload})
+        else:
+            note = (
+                "no matching Event Monitoring row for this component"
+                if event_idx.files_read else
+                "Event Monitoring not available; UI/object/field runtime "
+                "access is unobservable here"
+            )
+            out.evidence.append({
+                "component_id": c.id, "result": "NO_EVIDENCE_FOUND", "tier": None,
+                "weight": 0.0, "payload": {"entity_name": name, "note": note}})
+
+    # Event Monitoring is the strongest runtime signal. Loud when missing.
+    org_em = any(f.startswith("EventLogFile:") for f in event_idx.files_read)
+    local_only = event_idx.files_read and not org_em
+    if not event_idx.files_read and caps.has_event_monitoring is False:
         out.status = "PARTIAL" if out.status == "OK" else out.status
         out.unavailable_reason = (
             "Event Monitoring unavailable: external API traffic, page views and "
             "report exports are unobservable in this org")
+    elif local_only and caps.has_event_monitoring is False:
+        log.info("event_logs_substituted_for_event_monitoring",
+                 files=event_idx.files_read)
+    elif org_em:
+        log.info("event_logs_from_event_log_file",
+                 files=len(event_idx.files_read), rows=event_idx.rows)
     return out
 
 
@@ -519,10 +680,11 @@ async def collect_runtime(
 async def collect_temporal(run_id: str) -> CollectorOutcome:
     """Recently-created components look exactly like dead ones."""
     s_cfg = get_settings()
-    cutoff = datetime.now(UTC) - timedelta(days=s_cfg.analysis_recent_change_days)
+    days = await _run_recent_change_days(run_id, s_cfg.analysis_recent_change_days)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
     out = CollectorOutcome(
         "C50_temporal", "temporal",
-        method=f"created/modified within {s_cfg.analysis_recent_change_days} days "
+        method=f"created/modified within {days} days "
                "-> RECENTLY_CHANGED (half-built features resemble dead ones)",
     )
     async with session_scope() as s:
@@ -539,9 +701,31 @@ async def collect_temporal(run_id: str) -> CollectorOutcome:
             out.flags.append({
                 "component_id": r.id, "code": "RECENTLY_CHANGED",
                 "severity": "medium",
-                "detail": f"last changed {newest:%Y-%m-%d}; may be an "
-                          "in-progress feature rather than an abandoned one"})
+                "detail": f"last changed {newest:%Y-%m-%d}; within the "
+                          f"{days}-day recency window — may be an in-progress "
+                          "feature rather than an abandoned one",
+                "source_ref": {
+                    "window_days": days,
+                    "last_changed": f"{newest:%Y-%m-%d}",
+                },
+            })
     return out
+
+
+async def _run_recent_change_days(run_id: str, default: int) -> int:
+    """Per-run override from ``runs.config.recent_change_days``, else settings."""
+    async with session_scope() as s:
+        cfg = await s.scalar(text(
+            "SELECT config FROM runs WHERE id = :r"), {"r": run_id})
+    if isinstance(cfg, dict):
+        raw = cfg.get("recent_change_days")
+        try:
+            n = int(raw)
+            if 1 <= n <= 3650:
+                return n
+        except (TypeError, ValueError):
+            pass
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -565,8 +749,14 @@ async def collect_dynamic_taint(run_id: str, dynamic_files: list[str]) -> Collec
     if not dynamic_files:
         return out
 
-    class_names = [f.split("\\")[-1].split("/")[-1].removesuffix(".cls")
-                   for f in dynamic_files]
+    # Preserve path + class stem for clickable locations in the UI.
+    file_by_class: dict[str, str] = {}
+    for f in dynamic_files:
+        stem = f.split("\\")[-1].split("/")[-1].removesuffix(".cls")
+        if stem:
+            file_by_class[stem] = f.replace("\\", "/")
+    class_names = list(file_by_class.keys())
+
     async with session_scope() as s:
         rows = (await s.execute(text("""
             SELECT DISTINCT c.id, c.api_name, c.ctype::text
@@ -591,8 +781,28 @@ async def collect_dynamic_taint(run_id: str, dynamic_files: list[str]) -> Collec
                    AND parent_object = ANY(:objs)
             """), {"r": run_id, "objs": list(touched_objects)})).all()
 
+        # Map dynamic class names → inventoried ApexClass rows for reveal links.
+        class_comps = (await s.execute(text("""
+            SELECT id, api_name FROM components
+             WHERE run_id = :r AND ctype = 'ApexClass'
+               AND api_name = ANY(:names)
+        """), {"r": run_id, "names": class_names})).all()
+
+    sources = [{
+        "api_name": r.api_name,
+        "component_id": int(r.id),
+        "file_path": file_by_class.get(r.api_name),
+    } for r in class_comps]
+    # Classes found only as files (not inventoried) still appear as locations.
+    known = {s["api_name"].lower() for s in sources}
+    for name, path in file_by_class.items():
+        if name.lower() not in known:
+            sources.append({"api_name": name, "component_id": None,
+                            "file_path": path})
+
     out.artifacts = len(class_names)
     seen: set[int] = set()
+    names_preview = ", ".join(class_names[:3])
     for r in list(rows) + list(extra):
         if r.id in seen:
             continue
@@ -600,8 +810,10 @@ async def collect_dynamic_taint(run_id: str, dynamic_files: list[str]) -> Collec
         out.flags.append({
             "component_id": r.id, "code": "DYNAMIC_APEX_IN_SCOPE",
             "severity": "high",
-            "detail": f"reachable from dynamic Apex in {', '.join(class_names[:3])}; "
-                      "a runtime-built name cannot be resolved statically"})
+            "detail": f"reachable from dynamic Apex in {names_preview}; "
+                      "a runtime-built name cannot be resolved statically",
+            "source_ref": {"sources": sources},
+        })
     out.hits = len(seen)
     return out
 
@@ -656,13 +868,17 @@ async def persist(run_id: str, outcome: CollectorOutcome) -> None:
                     "d": g.get("detail")} for g in outcome.gaps])
 
         if outcome.flags:
+            import json as _json
             await s.execute(text("""
                 INSERT INTO uncertainty_flags (run_id, component_id, code,
-                                               severity, detail)
-                VALUES (:r, :c, :code, :sev, :d)
-                ON CONFLICT (component_id, code) DO NOTHING
+                                               severity, detail, source_ref)
+                VALUES (:r, :c, :code, :sev, :d, CAST(:src AS jsonb))
+                ON CONFLICT (component_id, code) DO UPDATE SET
+                    detail = EXCLUDED.detail,
+                    source_ref = COALESCE(EXCLUDED.source_ref, uncertainty_flags.source_ref)
             """), [{"r": run_id, "c": f["component_id"], "code": f["code"],
-                    "sev": f.get("severity", "medium"), "d": f.get("detail")}
+                    "sev": f.get("severity", "medium"), "d": f.get("detail"),
+                    "src": _json.dumps(f.get("source_ref")) if f.get("source_ref") is not None else None}
                    for f in outcome.flags])
 
     log.info("collector_persisted", collector=outcome.collector_id,

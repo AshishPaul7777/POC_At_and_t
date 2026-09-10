@@ -180,10 +180,11 @@ function VerdictDiagram() {
     ['R3a', 'only a layout references it, and no data exists', 'UNUSED', C.unused],
     ['R3', 'something binding references it', 'USED', C.used],
     ['R4', 'no reference, but real data or runtime activity', 'USED', C.used],
-    ['R5', 'externally invocable, or test-only code', 'NEEDS REVIEW', C.review],
-    ['R5b', 'code nothing can reach', 'UNUSED', C.unused],
+    ['R5', 'externally invocable, exposed UI, or test-only', 'NEEDS REVIEW', C.review],
     ['R6', 'an uncertainty flag is set', 'NEEDS REVIEW', C.review],
-    ['R7', 'only weak or ambiguous signal', 'NEEDS REVIEW', C.review],
+    ['R5b', 'code or private UI nothing can reach', 'UNUSED', C.unused],
+    ['R7a', 'only layout / permission-set presence, and no data', 'UNUSED', C.unused],
+    ['R7', 'other weak or ambiguous signal', 'NEEDS REVIEW', C.review],
     ['R8', 'something not-unused still references it', 'NEEDS REVIEW', C.review],
     ['R9', 'nothing found anywhere, every check ran', 'UNUSED', C.unused],
   ]
@@ -230,7 +231,7 @@ export function Docs() {
               <li>Flows, Process Builder, workflow rules</li>
               <li>Validation rules and formulas</li>
               <li>Reports, dashboards, list views</li>
-              <li>LWC, Aura, Visualforce</li>
+              <li>LWC / Aura on a FlexiPage, tab, app, or imported by another bundle</li>
               <li>Email templates</li>
               <li>Real data in real records</li>
               <li>API names stored in config records</li>
@@ -239,11 +240,12 @@ export function Docs() {
           <div className="col-card bad">
             <h4>Does not count</h4>
             <ul>
-              <li><b>Page layouts</b> — every field gets one at creation</li>
+              <li><b>Page layouts for fields</b> — every field gets one at creation</li>
               <li><b>Field-level security</b> — means someone <em>could</em> see
                   it, not that anyone does</li>
               <li><b>Its own definition file</b> — a declaration, not a use</li>
-              <li><b>Tabs and apps</b> — navigation structure</li>
+              <li><b>Tabs and apps for fields</b> — navigation only; for LWC/Aura,
+                  tab/app placement <em>is</em> use</li>
               <li><b>Comments</b> — a stale mention is not a reference</li>
               <li><b>Test code alone</b> — delete it with what it tests</li>
             </ul>
@@ -299,14 +301,13 @@ export function Docs() {
         </p>
         <p className="note">
           A component never shows all of them, and the count varies by design.
-          Two of these — recent changes and dynamic Apex — raise an uncertainty
-          flag rather than evidence, so they never appear as a marker at all.
-          Two more are type-specific: asking whether a record holds a value is
-          meaningless for an Apex class, and asking whether something executed
-          is meaningless for a field. And the delete rehearsal only runs for
-          components that are already deletion candidates, since it is the one
-          check that costs API calls. In practice a field or class shows five
-          markers, six when it was a candidate, and a method four or five.
+          Recent changes and dynamic Apex raise uncertainty flags rather than
+          evidence. Recent-change flags are informational only; dynamic Apex
+          flags force Needs review. Two more are type-specific: asking whether a
+          record holds a value is meaningless for an Apex class, and asking
+          whether something executed is meaningless for a field. And the delete
+          rehearsal only runs for components that are already deletion
+          candidates, since it is the one check that costs API calls.
         </p>
         <div className="twrap">
           <table className="doc-table">
@@ -319,10 +320,11 @@ export function Docs() {
                 ['Record data', 'Does any record hold a value?', 'B'],
                 ['Dependency API', 'Does Salesforce record a dependency edge?', 'A (positive only)'],
                 ['Runtime execution', 'Has this Apex actually run?', 'B'],
-                ['Recent changes', 'Was it touched recently?', 'D (flag)'],
-                ['Dynamic Apex', 'Could runtime-built code reach it?', 'D (flag)'],
+                ['Recent changes', 'Was it touched recently?', 'D (flag, info only)'],
+                ['Dynamic Apex', 'Could runtime-built code reach it?', 'D (flag → review)'],
                 ['Config data', 'Is the API name stored as data in CMDT?', 'A'],
                 ['Reachability', 'Can anything that runs or is seen reach it?', 'A'],
+                ['Externally invocable', 'REST/Schedulable/etc., or exposed LWC/Aura with no placement?', 'R5'],
                 ['Delete rehearsal', 'Would Salesforce permit the delete?', 'A (server-validated)'],
               ].map(([a, b, c]) => (
                 <tr key={a}><td><b>{a}</b></td><td>{b}</td><td><code>{c}</code></td></tr>
@@ -334,7 +336,9 @@ export function Docs() {
           <div><span className="tier a">Tier A</span> deleting it breaks a deploy or a runtime path</div>
           <div><span className="tier b">Tier B</span> the org actually did something with it</div>
           <div><span className="tier c">Tier C</span> the name appears somewhere, but nothing shown actually uses it — a test, a permission set, an inactive Flow, or an ambiguous name match</div>
-          <div><span className="tier d">Tier D</span> not evidence — an uncertainty flag that <b>suppresses</b> UNUSED</div>
+          <div><span className="tier d">Tier D</span> uncertainty flag —
+            dynamic Apex <b>suppresses</b> UNUSED; recent changes are
+            informational only</div>
         </div>
       </DocSection>
 

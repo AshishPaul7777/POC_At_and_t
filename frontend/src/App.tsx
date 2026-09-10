@@ -1,16 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Dashboard } from './components/Dashboard'
+import { Dashboard, type OverviewFilter } from './components/Dashboard'
 import { DetailPanel } from './components/DetailPanel'
 import { Docs } from './components/Docs'
 import { ExecutiveSummary } from './components/ExecutiveSummary'
 import { Graph } from './components/Graph'
 import { Admin } from './components/Admin'
 import { AiLibrary } from './components/AiLibrary'
+import { ApexSummary } from './components/ApexSummary'
+import {
+  ComponentFilterTags,
+  tagKey,
+  type CollectorEvidenceTag,
+} from './components/ComponentFilterTags'
+import { Examples } from './components/Examples'
+import { Explorer } from './components/explorer/Explorer'
 import { Assistant } from './components/Assistant'
 import { Login } from './components/Login'
 import { auth, type Me } from './lib/auth'
 import { parseHash } from './lib/anchors'
-import { explainConfidence, explainEvidence } from './lib/explain'
+import type { ApexClassKind } from './lib/apexGroup'
+import { APEX_KIND_LABEL } from './lib/apexGroup'
+import {
+  VERDICT_DEFINITION,
+  verdictClass,
+  verdictLabel,
+} from './lib/verdict'
 import { Nav, type View } from './components/Nav'
 import { Pipeline, type SnapshotStage } from './components/Pipeline'
 import {
@@ -24,8 +38,6 @@ import {
 } from './lib/api'
 import { stream } from './lib/stream'
 import { applyTheme, initialTheme, THEMES } from './lib/theme'
-
-const VERDICTS: Verdict[] = ['UNUSED', 'NEEDS_REVIEW', 'USED', 'OUT_OF_SCOPE']
 
 /**
  * Human-readable run label.
@@ -65,7 +77,10 @@ function relative(d: Date): string {
 
 const TITLES: Record<View, string> = {
   summary: 'Executive Summary',
-  dashboard: 'Components Overview',
+  overview: 'Overview',
+  components: 'Components',
+  examples: 'Examples',
+  explorer: 'Code Explorer',
   pipeline: 'Pipeline',
   graph: 'Dependencies',
   report: 'Deliverables',
@@ -81,6 +96,13 @@ const REVEAL_CLICKS = 5
 /** Guards the hash: a junk fragment must not leave the app on no view at all. */
 const VIEWS = new Set(Object.keys(TITLES))
 
+/** Old bookmarks used `#dashboard` for the combined page. */
+function resolveView(raw: string | undefined | null): View {
+  if (raw === 'dashboard') return 'overview'
+  if (raw && VIEWS.has(raw)) return raw as View
+  return 'summary'
+}
+
 export default function App() {
   const [run, setRun] = useState<Run | null>(null)
   const [runs, setRuns] = useState<Run[]>([])
@@ -88,7 +110,7 @@ export default function App() {
   // render rather than switching views a frame later.
   const [view, setView] = useState<View>(() => {
     const t = parseHash()
-    return (t && VIEWS.has(t.view) ? t.view : 'summary') as View
+    return resolveView(t?.view)
   })
   const [summary, setSummary] = useState<Summary | null>(null)
   const [rows, setRows] = useState<ComponentRow[]>([])
@@ -111,6 +133,12 @@ export default function App() {
   // toggle below safe to run twice.
   const brandClicks = useRef({ n: 0, at: 0 })
   const [query, setQuery] = useState('')
+  // Tag chips: each is collector + outcome; ANDed on the server.
+  const [evTags, setEvTags] = useState<CollectorEvidenceTag[]>([])
+  const [mode, setMode] = useState<'list' | 'apex'>('list')
+  const [apexKind, setApexKind] = useState<ApexClassKind | null>(null)
+  // Set when another view asks the explorer to reveal a component.
+  const [reveal, setReveal] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
@@ -133,8 +161,16 @@ export default function App() {
     () => window.matchMedia('(max-width: 780px)').matches,
   )
   const [theme, setTheme] = useState(() => initialTheme())
+  const [recentDays, setRecentDays] = useState(() => {
+    const raw = localStorage.getItem('sfc.recentChangeDays')
+    const n = raw ? Number(raw) : 90
+    return Number.isFinite(n) && n >= 1 && n <= 3650 ? Math.floor(n) : 90
+  })
 
   useEffect(() => { applyTheme(theme) }, [theme])
+  useEffect(() => {
+    localStorage.setItem('sfc.recentChangeDays', String(recentDays))
+  }, [recentDays])
 
   /** Five clicks on the wordmark toggles the engineering views.
    *
@@ -168,7 +204,7 @@ export default function App() {
     // While a run is going, Pipeline is visible whatever the reveal says --
     // otherwise pressing "Run analysis" appears to do nothing for ten minutes.
     if (activeRunId) return
-    if (!revealed && (view === 'pipeline' || view === 'graph')) setView('dashboard')
+    if (!revealed && (view === 'pipeline' || view === 'graph')) setView('overview')
   }, [revealed, view, activeRunId])
 
   useEffect(() => {
@@ -183,7 +219,7 @@ export default function App() {
     const onHash = () => {
       const t = parseHash()
       if (!t) return
-      if (VIEWS.has(t.view)) setView(t.view as View)
+      if (VIEWS.has(t.view) || t.view === 'dashboard') setView(resolveView(t.view))
       if (t.anchor) {
         document.getElementById(t.anchor)
           ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -295,11 +331,14 @@ export default function App() {
     return () => clearInterval(t)
   }, [activeRunId])
 
+  const [explorerEpoch, setExplorerEpoch] = useState(0)
   const refresh = useCallback(async (id: string) => {
     const [s, all] = await Promise.all([api.summary(id), api.components(id, {})])
     setSummary(s)
     setAllRows(all)
     setGraph(null)
+    // Explorer only watches runId; bump so it reloads after classify finishes.
+    setExplorerEpoch((n) => n + 1)
   }, [])
 
   useEffect(() => { if (run) refresh(run.id).catch(() => setSummary(null)) }, [run, refresh])
@@ -310,9 +349,10 @@ export default function App() {
       verdict: verdict === 'ALL' ? undefined : verdict,
       ctype: ctype === 'ALL' ? undefined : ctype,
       q: query || undefined,
+      ev: evTags.map(tagKey),
     })
       .then(setRows).catch((e) => setError(String(e)))
-  }, [run, verdict, ctype, query, summary])
+  }, [run, verdict, ctype, query, evTags, summary])
 
   useEffect(() => {
     if (!run || view !== 'graph' || graph) return
@@ -331,7 +371,9 @@ export default function App() {
     try {
       const r = await fetch('/api/runs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          config: { recent_change_days: recentDays },
+        }),
       })
       const body = await r.json()
       if (!r.ok) throw new Error(body.detail ?? `HTTP ${r.status}`)
@@ -346,7 +388,7 @@ export default function App() {
     } finally {
       setStarting(false)
     }
-  }, [loadRun])
+  }, [loadRun, recentDays])
 
   const onRunFinished = useCallback(() => {
     const id = activeRunId
@@ -361,6 +403,30 @@ export default function App() {
     setSelected(null)
     await loadRun(id)
   }, [loadRun])
+
+  /** Overview analytics → Components list with the matching filter applied. */
+  const openComponents = useCallback((filter?: OverviewFilter) => {
+    setVerdict(filter?.verdict ?? 'ALL')
+    setCtype(filter?.ctype ?? 'ALL')
+    setQuery(filter?.focusClass ?? '')
+    setEvTags([])
+    setMode(filter?.mode ?? 'list')
+    setApexKind(filter?.apexKind ?? null)
+    setView('components')
+  }, [])
+
+  /** Examples → Components with that row selected and detail loaded. */
+  const openExampleComponent = useCallback((row: ComponentRow) => {
+    setVerdict('ALL')
+    setCtype(row.ctype)
+    setQuery(row.api_name)
+    setEvTags([])
+    setMode('list')
+    setApexKind(null)
+    setView('components')
+    history.replaceState(null, '', '#components')
+    open(row.id)
+  }, [open])
 
   /**
    * Selecting a node must NOT navigate away.
@@ -390,9 +456,27 @@ export default function App() {
     return (
       <div className="boot">
         <div className="err">{error}</div>
-        <button className="primary" disabled={starting} onClick={startRun}>
-          {starting ? 'Starting...' : 'Run analysis'}
-        </button>
+        <div className="boot-actions">
+          <label className="recency-ctl"
+                 title="Components changed within this many days get an informational recent-change flag.">
+            <span>Recency</span>
+            <input
+              type="number"
+              min={1}
+              max={3650}
+              value={recentDays}
+              disabled={starting}
+              onChange={(e) => {
+                const n = Number(e.target.value)
+                if (Number.isFinite(n)) setRecentDays(Math.min(3650, Math.max(1, Math.floor(n))))
+              }}
+            />
+            <span className="recency-unit">days</span>
+          </label>
+          <button className="primary" disabled={starting} onClick={startRun}>
+            {starting ? 'Starting...' : 'Run analysis'}
+          </button>
+        </div>
       </div>
     )
   }
@@ -456,6 +540,22 @@ export default function App() {
               ))}
             </select>
           )}
+          <label className="recency-ctl"
+                 title="Components changed within this many days get an informational recent-change flag (C50). Applies to the next Run analysis.">
+            <span>Recency</span>
+            <input
+              type="number"
+              min={1}
+              max={3650}
+              value={recentDays}
+              disabled={starting || !!activeRunId}
+              onChange={(e) => {
+                const n = Number(e.target.value)
+                if (Number.isFinite(n)) setRecentDays(Math.min(3650, Math.max(1, Math.floor(n))))
+              }}
+            />
+            <span className="recency-unit">days</span>
+          </label>
           <button className="primary" disabled={starting || !!activeRunId} onClick={startRun}>
             {activeRunId ? 'Running...' : starting ? 'Starting...' : 'Run analysis'}
           </button>
@@ -497,103 +597,131 @@ export default function App() {
                       live={!!activeRunId} onDone={onRunFinished} />
           )}
 
-          {view === 'dashboard' && (
-            <div className="overview">
-              {/* Full width: the hero, the four counts and the composition
-                  chart are page-level context, and reading them inside a 46%
-                  column while the other half sat empty made no sense. The two
-                  columns start where the component list does. */}
-              {summary && (
-                <div className="overview-head">
-                  <Dashboard summary={summary} rows={allRows} headerOnly
-                             onPick={(v) => setVerdict(v)} />
-                </div>
-              )}
+          {view === 'overview' && (
+            summary
+              ? <Dashboard summary={summary} allRows={allRows}
+                           onOpenComponents={openComponents} />
+              : <div className="loading">Loading overview…</div>
+          )}
+
+          {view === 'components' && (
+            <div className="overview components-page">
               <div className="split">
               <div className="left">
-                <div className="filters">
-                  {/* "All" first and selected by default: the search box below
-                      queries within the chosen verdict, so starting on a single
-                      verdict made a search for anything else look broken. */}
-                  <button data-active={verdict === 'ALL'} onClick={() => setVerdict('ALL')}>
-                    All ({VERDICTS.reduce((a, v) => a + (t[v] ?? 0), 0)})
-                  </button>
-                  {VERDICTS.map((v) => (
-                    <button key={v} data-active={verdict === v} onClick={() => setVerdict(v)}>
-                      {v.replaceAll('_', ' ')} ({t[v] ?? 0})
-                    </button>
-                  ))}
-                  <select value={ctype} onChange={(e) => setCtype(e.target.value)}
-                          title="Component type">
-                    <option value="ALL">All types</option>
-                    {Object.entries(summary?.by_type ?? {})
-                      .sort((a, b) => a[0].localeCompare(b[0]))
-                      .map(([type, counts]) => (
-                        <option key={type} value={type}>
-                          {type} ({Object.values(counts as Record<string, number>)
-                            .reduce((x, y) => x + y, 0)})
-                        </option>
-                      ))}
-                  </select>
-                  <input placeholder="search any component by name..." value={query}
-                         onChange={(e) => setQuery(e.target.value)} />
-                  {(verdict !== 'ALL' || ctype !== 'ALL' || query) && (
-                    <button className="linkish" onClick={() => {
-                      setVerdict('ALL'); setCtype('ALL'); setQuery('')
-                    }}>clear</button>
+                <div className="filter-panel">
+                  {/* Row 1: view mode + search. Kept apart from narrowing
+                      filters so the page doesn't read as one busy chip pile. */}
+                  <div className="filter-row filter-row-primary">
+                    <div className="mode-toggle">
+                      <button type="button" data-active={mode === 'list'}
+                              onClick={() => { setMode('list'); setApexKind(null) }}>
+                        All components
+                      </button>
+                      <button type="button" data-active={mode === 'apex'}
+                              onClick={() => setMode('apex')}
+                              title="Every Apex class with its methods nested underneath,
+                                     so a used class with dead methods is visible.">
+                        Apex summary
+                      </button>
+                    </div>
+                    <input className="filter-search"
+                           placeholder={mode === 'apex'
+                             ? 'Search a class or method…'
+                             : 'Search by name…'}
+                           value={query} onChange={(e) => setQuery(e.target.value)} />
+                    {mode === 'list' && (
+                      <span className="tb-hint">{rows.length} shown</span>
+                    )}
+                    {(verdict !== 'ALL' || ctype !== 'ALL' || query || apexKind
+                      || evTags.length > 0) && (
+                      <button type="button" className="linkish" onClick={() => {
+                        setVerdict('ALL'); setCtype('ALL'); setQuery(''); setApexKind(null)
+                        setEvTags([])
+                      }}>Clear filters</button>
+                    )}
+                  </div>
+
+                  {mode === 'apex' && apexKind && (
+                    <div className="filter-row">
+                      <span className="tb-hint">
+                        Showing {APEX_KIND_LABEL[apexKind]}
+                        {' '}
+                        <button type="button" className="linkish"
+                                onClick={() => setApexKind(null)}>clear type</button>
+                      </span>
+                    </div>
                   )}
-                  <span className="tb-hint">{rows.length} shown</span>
+
+                  {mode === 'list' && (
+                    <ComponentFilterTags
+                      verdict={verdict}
+                      onVerdict={setVerdict}
+                      ctype={ctype}
+                      onCtype={setCtype}
+                      verdictCounts={t}
+                      typeOptions={Object.entries(summary?.by_type ?? {})
+                        .map(([type, counts]) => ({
+                          type,
+                          count: Object.values(counts as Record<string, number>)
+                            .reduce((x, y) => x + y, 0),
+                        }))
+                        .sort((a, b) => a.type.localeCompare(b.type))}
+                      checkTags={evTags}
+                      onCheckTags={setEvTags}
+                    />
+                  )}
                 </div>
+                {mode === 'apex' ? (
+                  // allRows, not rows: the grouping needs every class present,
+                  // including the used ones that dead methods hang from.
+                  <div className="twrap">
+                    <ApexSummary rows={allRows} query={query} selected={selected}
+                                 kind={apexKind} onOpen={open} />
+                  </div>
+                ) : (
                 <div className="twrap">
                   <table>
                     <thead>
                       <tr>
-                        <th>Component</th><th>Type</th>
-                        <th title="One marker per collector: filled = found something, hollow = searched and found nothing, teal = inconclusive, red = could not check. Hover a row for its own breakdown.">
-                          Evidence
-                        </th>
-                        <th>Conf</th>
+                        <th>Component</th><th>Type</th><th>Status</th>
                       </tr>
                     </thead>
                     <tbody>
                       {rows.map((r) => (
                         <tr key={r.id} data-selected={selected === r.id} onClick={() => open(r.id)}>
-                          <td>
-                            <code>{r.api_name}</code>
-                            {r.removal_prerequisites?.length > 0 && (
-                              <span className="prereq-chip">
-                                {r.removal_prerequisites.length} step(s) first
-                              </span>
-                            )}
-                          </td>
+                          <td><code>{r.api_name}</code></td>
                           <td style={{ color: 'var(--text-dim)' }}>{r.ctype}</td>
-                          <td title={explainEvidence({ ...r, ctype: r.ctype })}>
-                            <span className="strip">
-                              {Array.from({ length: r.hits }).map((_, i) => <i key={`h${i}`} className="dot hit" />)}
-                              {Array.from({ length: r.clean }).map((_, i) => <i key={`c${i}`} className="dot clean" />)}
-                              {Array.from({ length: r.unclear }).map((_, i) => <i key={`u${i}`} className="dot unclear" />)}
-                              {Array.from({ length: r.gaps }).map((_, i) => <i key={`g${i}`} className="dot gap" />)}
+                          <td>
+                            <span className={`badge ${verdictClass(r.verdict)}`}
+                                  title={r.verdict ? VERDICT_DEFINITION[r.verdict] : undefined}>
+                              {verdictLabel(r.verdict)}
                             </span>
-                          </td>
-                          <td style={{ color: 'var(--text-faint)' }}
-                              title={r.confidence != null
-                                ? explainConfidence({ confidence: r.confidence,
-                                                      verdict: r.verdict })
-                                : 'Not classified yet.'}>
-                            {r.confidence != null ? Math.round(r.confidence) : '-'}
                           </td>
                         </tr>
                       ))}
                       {rows.length === 0 && (
-                        <tr><td colSpan={4} className="empty">Nothing matches this filter.</td></tr>
+                        <tr><td colSpan={3} className="empty">Nothing matches this filter.</td></tr>
                       )}
                     </tbody>
                   </table>
                 </div>
+                )}
               </div>
-              <div className="right"><DetailPanel detail={detail} /></div>
+              <div className="right"><DetailPanel detail={detail}
+                          onOpenComponent={(cid) => open(cid)}
+                          onReveal={(cid) => { setReveal(cid); setView('explorer') }} /></div>
               </div>
             </div>
+          )}
+
+          {view === 'examples' && (
+            <Examples rows={allRows} onOpenComponent={openExampleComponent} />
+          )}
+
+          {view === 'explorer' && (
+            <Explorer runId={run.id} revealComponentId={reveal}
+                      refreshToken={explorerEpoch}
+                      onOpenComponent={(cid) => { open(cid); setView('components') }} />
           )}
 
           {view === 'graph' && (
@@ -617,7 +745,7 @@ export default function App() {
               </div>
               {graph
                 ? <Graph data={graph} onSelect={onGraphSelect}
-                         onOpenComponent={(cid) => { open(cid); setView('dashboard') }} />
+                         onOpenComponent={(cid) => { open(cid); setView('components') }} />
                 : <div className="loading">Building graph...</div>}
             </div>
           )}
@@ -640,15 +768,27 @@ export default function App() {
                 </p>
               </section>
               <div className="exports">
+                {/* Each card names its audience first. Four downloads with no
+                    indication of who they are for meant every reviewer opened
+                    the spreadsheet, including the ones who wanted the XML. */}
                 {([
-                  ['xlsx', 'Working spreadsheet', '7 sheets: summary, coverage & limits, deletion candidates, needs review, all components, evidence detail, remediation', 'cleanup-report.xlsx', false],
-                  ['markdown', 'Markdown report', 'Pastes into Confluence, Jira or a pull request description', 'cleanup-report.md', false],
-                  ['json', 'Machine contract', 'Versioned schema for scripting or diffing runs', 'cleanup-report.json', false],
-                  ['destructive_changes', 'Delete package', 'Deployable destructiveChanges.xml for the UNUSED set. Validate with --dry-run first; this app never deploys it', 'destructiveChangesPost.xml', true],
-                ] as const).map(([k, title, desc, file, danger]) => (
+                  ['xlsx', 'Working spreadsheet', 'For the person doing the cleanup',
+                   '7 sheets: summary, coverage & limits, deletion candidates, needs review, all components, evidence detail, remediation',
+                   'cleanup-report.xlsx', false],
+                  ['markdown', 'Markdown report', 'For sharing with the wider team',
+                   'Pastes into Confluence, Jira or a pull request description',
+                   'cleanup-report.md', false],
+                  ['json', 'Machine contract', 'For engineers scripting against it',
+                   'Versioned schema for scripting or diffing one run against another',
+                   'cleanup-report.json', false],
+                  ['destructive_changes', 'Delete package', 'For the release manager',
+                   'Deployable destructiveChanges.xml for the unused set. Validate with --dry-run first; this app never deploys it',
+                   'destructiveChangesPost.xml', true],
+                ] as const).map(([k, title, who, desc, file, danger]) => (
                   <a key={k} className={`export-card ${danger ? 'danger' : ''}`}
                      href={`/api/runs/${run.id}/report/${k}`} download>
                     <b>{title}</b>
+                    <em className="export-who">{who}</em>
                     <span>{desc}</span>
                     <code>{file}</code>
                   </a>

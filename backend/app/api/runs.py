@@ -38,13 +38,23 @@ async def create(payload: dict | None = None) -> dict:
     """Start a run. Returns immediately; watch progress on the event stream."""
     body = payload or {}
     alias = body.get("alias")
+    config = dict(body.get("config") or {})
+    # Clamp UI-supplied recency window (days). Used by C50 temporal collector.
+    if "recent_change_days" in config:
+        try:
+            days = int(config["recent_change_days"])
+        except (TypeError, ValueError) as e:
+            raise HTTPException(400, "recent_change_days must be an integer") from e
+        if not 1 <= days <= 3650:
+            raise HTTPException(400, "recent_change_days must be between 1 and 3650")
+        config["recent_change_days"] = days
     if active_runs():
         # One run at a time, matching the DB's one_active_run_per_org index.
         # Two workers on one org would race on the same tables.
         rid = next(iter(active_runs()))
         raise HTTPException(409, f"a run is already in progress: {rid}")
     try:
-        run_id = await start_run(alias, config=body.get("config"))
+        run_id = await start_run(alias, config=config or None)
     except KeyError as e:
         raise HTTPException(400, str(e)) from e
     except Exception as e:

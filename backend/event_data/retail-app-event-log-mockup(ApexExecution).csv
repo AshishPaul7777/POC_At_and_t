@@ -1,0 +1,12 @@
+EVENT_TYPE,TIMESTAMP,ORGANIZATION_ID,USER_ID,REQUEST_ID,APEX_CLASS_NAME,APEX_METHOD_NAME,RUN_TIME,CPU_TIME,STATUS
+ApexExecution,2026-09-08T14:15:22.000Z,00DRT0000RetailAppOrg,005RTuser0001abcd,4XzR7fGv21aa,InventoryReplenishmentService,getLowStockItems,180,95,Success
+ApexExecution,2026-09-08T14:16:05.000Z,00DRT0000RetailAppOrg,005RTuser0001abcd,9PqW3mKz89bb,OrderFulfillmentService,createOrder,240,130,Success
+ApexExecution,2026-09-08T14:17:12.000Z,00DRT0000RetailAppOrg,005RTuser0002efgh,3LkY8sTx54cc,LoyaltyRewardsEngine,evaluateMembershipTier,95,40,Success
+ApexExecution,2026-09-08T14:18:03.000Z,00DRT0000RetailAppOrg,005RTuser0002efgh,7VbN2xQw43dd,StoreOperationsController,getActiveStores,60,25,Success
+ApexExecution,2026-09-08T14:19:45.000Z,00DRT0000RetailAppOrg,005RTuser0003ijkl,1MnB9vCx72ee,ProductCatalogBatchProcessor,execute,3200,2650,Success
+ApexExecution,2026-09-08T14:20:30.000Z,00DRT0000RetailAppOrg,005RTuser0003ijkl,6QwE4rTy85ff,LoyaltyBonusPointsInvocable,awardBonusPoints,110,55,Success
+ApexExecution,2026-09-08T14:21:02.000Z,00DRT0000RetailAppOrg,005RTuser0001abcd,2ZxC7vBn19gg,InventoryLowStockNotifierInvocable,notifyLowStock,70,30,Success
+ApexExecution,2026-09-08T14:02:00.000Z,00DRT0000RetailAppOrg,005RTuser0000auto,8HgF5dSa63hh,LoyaltyMembershipExpirationScheduler,execute,410,220,Success
+ApexExecution,2026-09-08T14:22:40.000Z,00DRT0000RetailAppOrg,005RTuser0002efgh,5TrY9uIo74ii,DynamicScheduledJobInvoker,describeFieldDynamically,50,20,Success
+ApexExecution,2026-09-08T14:23:15.000Z,00DRT0000RetailAppOrg,005RTuser0003ijkl,0AsD3fGh26jj,ExternalCalloutService,getSampleData,610,80,Success
+ApexExecution,2026-09-08T14:24:05.000Z,00DRT0000RetailAppOrg,005RTuser0001abcd,4PoI6uYt38kk,CustomerOrderRestService,createCustomerOrder,190,90,Success

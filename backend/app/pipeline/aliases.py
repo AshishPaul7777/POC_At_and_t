@@ -172,6 +172,45 @@ def method_aliases(*, class_name: str, method_name: str) -> list[Alias]:
     return _dedupe(out)
 
 
+def _camel_to_kebab(name: str) -> str:
+    """myComponent -> my-component (LWC custom-element form)."""
+    import re
+    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1-\2", name)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", s1).lower()
+
+
+def ui_bundle_aliases(
+    *,
+    api_name: str,
+    sf_id: str | None = None,
+    namespace: str | None = None,
+) -> list[Alias]:
+    """Forms LWC/Aura appear under in FlexiPages, imports, and markup.
+
+    Placement and cross-bundle imports are Tier-A use for UI types. These
+    aliases have to match the exact strings those files write.
+    """
+    out: list[Alias] = []
+    add = lambda v, k, g: out.append(Alias(v.lower(), k, g))  # noqa: E731
+
+    add(api_name, "api_name", "ui.api_name")
+    # LWC JS: import x from 'c/bundleName'
+    add(f"c/{api_name}", "qualified", "ui.lwc_import")
+    # Aura / FlexiPage: c:BundleName or <c:BundleName
+    add(f"c:{api_name}", "qualified", "ui.aura_tag")
+    # LWC HTML custom element: <c-bundle-name
+    kebab = _camel_to_kebab(api_name)
+    add(f"c-{kebab}", "qualified", "ui.lwc_element")
+    if namespace:
+        add(f"{namespace}/{api_name}", "qualified", "ui.ns_import")
+        add(f"{namespace}:{api_name}", "qualified", "ui.ns_tag")
+    if sf_id:
+        add(sf_id, "sf_id_18", "ui.sf_id")
+        if (short := _id15(sf_id)):
+            add(short, "sf_id_15", "ui.sf_id_15")
+    return _dedupe(out)
+
+
 def _dedupe(aliases: list[Alias]) -> list[Alias]:
     """Keep the first occurrence of each (alias, kind) pair."""
     seen: set[tuple[str, str]] = set()

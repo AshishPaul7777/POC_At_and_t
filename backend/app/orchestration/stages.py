@@ -39,6 +39,14 @@ async def s_connect(o: Orchestrator) -> dict:
             o.bus.emit("stage.note", "org.connect", text="using cached capabilities")
             caps.api_limit_remaining, caps.api_limit_max = \
                 await sf.daily_api_remaining()
+            # Event Monitoring can flip from empty → licensed (or retention
+            # refill) without other caps changing. Re-check cheaply when the
+            # cache said unavailable, so C40 does not inherit a stale blind spot.
+            if caps.has_event_monitoring is False:
+                refreshed = await cap.refresh_event_monitoring(sf, caps)
+                if refreshed:
+                    o.bus.emit("stage.note", "org.connect",
+                               text="Event Monitoring now visible — cache updated")
             await cap.save(caps)
 
         o.ctx["caps"] = caps
@@ -102,9 +110,17 @@ async def s_retrieve(o: Orchestrator) -> dict:
 
 async def s_index(o: Orchestrator) -> dict:
     from app.pipeline.indexer import index_workspace
+    from app.pipeline.inventory import inventory_ui_from_workspace
 
     s_cfg = get_settings()
     ws = s_cfg.workspace / o.ctx["conn"].alias
+    # LWC/Aura attrs live in retrieved meta — inventory them before the index
+    # so FlexiPage and cross-bundle alias matches have component rows to hit.
+    ui_counts = await inventory_ui_from_workspace(o.run_id, ws)
+    o.bus.emit("stage.note", "index",
+               text=f"UI inventory: "
+                    f"{ui_counts.get('LightningComponentBundle', 0)} LWC, "
+                    f"{ui_counts.get('AuraDefinitionBundle', 0)} Aura")
     stats = await index_workspace(o.run_id, ws)
     o.ctx["dynamic_files"] = stats.dynamic_files
     if stats.dynamic_files:
@@ -114,7 +130,9 @@ async def s_index(o: Orchestrator) -> dict:
                         "a name built at runtime cannot be resolved statically")
     return {"artifacts": stats.artifacts, "tokens": stats.tokens,
             "literals": stats.literals, "edges": stats.edges,
-            "dynamic_files": len(stats.dynamic_files)}
+            "dynamic_files": len(stats.dynamic_files),
+            **{f"ui_{k}": v for k, v in ui_counts.items()
+               if not k.endswith("excluded)")}}
 
 
 async def s_collect(o: Orchestrator) -> dict:
@@ -253,12 +271,25 @@ async def s_narrate(o: Orchestrator) -> dict:
     if n["status"] == "DISABLED":
         return {"_state": "SKIPPED", "_reason": "disabled"}
 
-    if n.get("flagged_for_review"):
+    if n.get("flagged_for_review") or n.get("promoted_to_used"):
         counts = await classify_run(o.run_id)
         o.bus.emit("verdicts", "narrate", **counts)
         n.update(counts)
 
-    out = {k: v for k, v in n.items() if k != "status"}
+    # Stage card: narration outcomes only — not provider diagnostics.
+    out = {
+        "generated": n.get("generated", 0),
+        "failed": n.get("failed", 0),
+        "refused": n.get("refused", 0),
+        "flagged_for_review": n.get("flagged_for_review", 0),
+        "promoted_to_used": n.get("promoted_to_used", 0),
+        "candidates": n.get("candidates", 0),
+        "model": n.get("model"),
+    }
+    if "USED" in n:
+        out["USED"] = n["USED"]
+        out["UNUSED"] = n.get("UNUSED", 0)
+        out["NEEDS_REVIEW"] = n.get("NEEDS_REVIEW", 0)
     # Reporting SUCCEEDED when every call failed would be dishonest: the stage
     # produced nothing. It is DEGRADED, and the reason is surfaced as a caveat so
     # a reader knows the summaries are missing rather than empty by design.

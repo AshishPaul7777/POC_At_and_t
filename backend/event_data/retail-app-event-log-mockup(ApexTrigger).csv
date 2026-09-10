@@ -1,0 +1,5 @@
+EVENT_TYPE,TIMESTAMP,ORGANIZATION_ID,USER_ID,REQUEST_ID,TRIGGER_NAME,ENTITY_NAME,OPERATION_TYPE,RUN_TIME
+ApexTrigger,2026-09-08T14:24:05.050Z,00DRT0000RetailAppOrg,005RTuser0001abcd,4PoI6uYt38kk,CustomerOrderTrigger,Customer_Order__c,BeforeInsert,35
+ApexTrigger,2026-09-08T14:24:05.400Z,00DRT0000RetailAppOrg,005RTuser0001abcd,7LkM2nBv51ll,CustomerOrderTrigger,Customer_Order__c,BeforeUpdate,28
+ApexTrigger,2026-09-08T14:24:05.600Z,00DRT0000RetailAppOrg,005RTuser0001abcd,4PoI6uYt38kk,OrderTriggerEventTrigger,Order_Trigger_Event__e,AfterInsert,45
+ApexTrigger,2026-09-08T14:23:15.400Z,00DRT0000RetailAppOrg,005RTuser0003ijkl,0AsD3fGh26jj,ApexCalloutEventTrigger,Apex_Callout_Event__e,AfterInsert,40

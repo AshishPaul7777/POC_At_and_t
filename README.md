@@ -101,6 +101,7 @@ docker exec sfc-postgres psql -U postgres -d sfcleanup -c "\dt"
 | `004_standard_object_type.sql` | `StandardObject` to the `component_type` enum |
 | `005_agent_chat.sql` | Chat threads, messages, tool trace, and agent findings |
 | `006_auth.sql` | `app_user` — sign-in accounts and roles |
+| `007_ui_component_types.sql` | `LightningComponentBundle` and `AuraDefinitionBundle` on `component_type` |
 
 ### 3. Install backend dependencies
 
