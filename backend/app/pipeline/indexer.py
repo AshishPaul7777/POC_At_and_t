@@ -187,6 +187,17 @@ def _is_test_artifact(path: Path, content: str) -> bool:
     return "@istest" in content[:4000].lower()
 
 
+#: Custom Metadata / Custom Settings gating fields follow no platform schema —
+#: teams name their own enable/active flag. A record whose only such field is
+#: false is a disabled feature flag: it names a component without proving any
+#: business process currently reaches it through that record.
+_CMDT_GATE_FIELD_RE = re.compile(
+    r"<field>(\w*(?:is_?enabled|is_?active|active|enabled)\w*)</field>\s*"
+    r"<value[^>]*type=\"xsd:boolean\">false</value>",
+    re.IGNORECASE,
+)
+
+
 def _is_active(mdtype: str, content: str, abs_path: Path | None = None) -> bool:
     """Is the consumer live?
 
@@ -201,6 +212,8 @@ def _is_active(mdtype: str, content: str, abs_path: Path | None = None) -> bool:
     if mdtype in ("Workflow", "ValidationRule", "ApprovalProcess", "DuplicateRule"):
         if "<active>false</active>" in low:
             return False
+    if mdtype == "CustomMetadata" and _CMDT_GATE_FIELD_RE.search(content):
+        return False
     if mdtype in ("ApexClass", "ApexTrigger") and abs_path is not None:
         meta = Path(str(abs_path) + "-meta.xml")
         if meta.is_file():
@@ -392,6 +405,9 @@ def _tokenise(content: str) -> dict[str, int]:
     return counts
 
 
+_SOQL_SHAPE_RE = re.compile(r"\bselect\b.*\bfrom\b", re.IGNORECASE | re.DOTALL)
+
+
 def _literals_from(ex) -> dict[str, str]:
     """Literal -> origin. Uses the properly-scanned literals, not a regex.
 
@@ -406,7 +422,13 @@ def _literals_from(ex) -> dict[str, str]:
         out.setdefault(v.lower(), "string_literal")
         # A dynamic SOQL string is itself a container of references, so tokenise
         # inside it too: 'SELECT Legacy_Code__c FROM Order__c' yields both names.
-        if " " in v:
+        #
+        # Restricted to SOQL-shaped literals, not any literal with a space —
+        # otherwise a free-text audit-log message that happens to name a
+        # component in prose ("auraCard ran its gated task") would count as a
+        # dynamic reference, which is exactly the false positive this file
+        # exists to avoid.
+        if _SOQL_SHAPE_RE.search(v):
             for t in _TOKEN_RE.finditer(v):
                 out.setdefault(t.group(0).lower(), "string_literal")
     for m in _MERGE_RE.finditer(ex.code):

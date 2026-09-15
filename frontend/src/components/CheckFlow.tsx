@@ -64,11 +64,14 @@ function stepState(ev: Evidence | undefined, gap: boolean): StepState {
   return 'incomplete'
 }
 
-function stateLabel(s: StepState): string {
+function stateLabel(s: StepState, collectorId?: string): string {
   switch (s) {
     case 'hit': return 'Found use'
     case 'clear': return 'Nothing found'
-    case 'na': return 'Not applicable'
+    // Delete rehearsal skips components that aren't deletion candidates by
+    // design, not because the check doesn't apply to their type — "not
+    // required" reflects that distinction instead of implying a mismatch.
+    case 'na': return collectorId === 'C90_delete_rehearsal' ? 'Not required' : 'Not applicable'
     case 'incomplete': return 'Incomplete'
     case 'surface': return 'Surface found'
     case 'verdict': return 'Verdict'
@@ -543,10 +546,10 @@ export function CheckFlow(
               onMouseLeave={() => { if (!lockedId) setHoverId(null) }}
               onClick={() => setLockedId((was) => was === s.id ? null : s.id)}
               aria-pressed={lockedId === s.id}
-              title={s.detail || s.question || stateLabel(s.state)}
+              title={s.detail || s.question || stateLabel(s.state, s.id)}
             >
               <span className="cf-label">{s.label}</span>
-              <span className="cf-state">{stateLabel(s.state)}</span>
+              <span className="cf-state">{stateLabel(s.state, s.id)}</span>
             </button>
           </div>
         ))}
