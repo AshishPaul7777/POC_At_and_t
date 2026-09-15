@@ -410,7 +410,8 @@ async def collect_dependency_api(
     async with session_scope() as s:
         comps = (await s.execute(text("""
             SELECT c.id, c.api_name, c.sf_id, c.ctype::text
-              FROM components c WHERE c.run_id = :r AND c.in_scope
+              FROM components c
+             WHERE c.run_id = :r AND c.in_scope AND c.ctype::text != 'ApexMethod'
         """), {"r": run_id})).all()
 
     for c in comps:
@@ -690,7 +691,8 @@ async def collect_temporal(run_id: str) -> CollectorOutcome:
     async with session_scope() as s:
         rows = (await s.execute(text("""
             SELECT id, api_name, created_date, last_modified_date
-              FROM components WHERE run_id = :r AND in_scope
+              FROM components
+             WHERE run_id = :r AND in_scope AND ctype::text != 'ApexMethod'
         """), {"r": run_id})).all()
     out.artifacts = len(rows)
     for r in rows:

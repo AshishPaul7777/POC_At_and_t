@@ -158,6 +158,10 @@ function whyNotMore(ctype: string): string[] {
   if (ctype === 'ApexMethod') {
     out.push('Delete rehearsal — a method is not deployable on its own, so'
       + ' Salesforce cannot be asked about deleting one')
+    out.push('Recent changes — Last Modified Date is tracked at the class'
+      + ' level, not per method')
+    out.push("Salesforce's dependency API — it reports edges at the class"
+      + ' level, not per method')
   }
   return out
 }
@@ -922,6 +926,10 @@ export function collectorsForType(ctype: string): string[] {
     if (id === 'C20_data_population' && (apex || ui)) return false
     if (id === 'C40_runtime' && !(apex || ui || schema)) return false
     if (id === 'C90_delete_rehearsal' && ctype === 'ApexMethod') return false
+    // Salesforce tracks LastModifiedDate and dependency edges at the class
+    // level, not per method — these checks cannot apply to a method row.
+    if (id === 'C50_temporal' && ctype === 'ApexMethod') return false
+    if (id === 'C30_dependency_api' && ctype === 'ApexMethod') return false
     return true
   })
 }
@@ -948,6 +956,12 @@ export function notApplicableReason(collectorId: string, ctype: string): string 
   }
   if (collectorId === 'C90_delete_rehearsal' && ctype === 'ApexMethod') {
     return 'A method cannot be deleted on its own, so this check does not run.'
+  }
+  if (collectorId === 'C50_temporal' && ctype === 'ApexMethod') {
+    return 'Salesforce tracks Last Modified Date at the class level, not per method — this check does not apply to methods.'
+  }
+  if (collectorId === 'C30_dependency_api' && ctype === 'ApexMethod') {
+    return "Salesforce's dependency API reports edges at the class level, not per method — this check does not apply to methods."
   }
   if (collectorId === 'C90_delete_rehearsal') {
     return 'Delete rehearsal only runs for components that already look unused.'
